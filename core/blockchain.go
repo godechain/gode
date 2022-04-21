@@ -217,6 +217,7 @@ type BlockChain struct {
 	borReceiptsCache *lru.Cache             // Cache for the most recent bor receipt receipts per block
 	stateSyncData    []*types.StateSyncData // State sync data
 	stateSyncFeed    event.Feed             // State sync feed
+	chain2HeadFeed   event.Feed             // Reorg/NewHead/Fork data feed
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -1644,6 +1645,11 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		}
 	} else {
 		bc.chainSideFeed.Send(ChainSideEvent{Block: block})
+
+		bc.chain2HeadFeed.Send(Chain2HeadEvent{
+			Type:     Chain2HeadForkEvent,
+			NewChain: []*types.Block{block},
+		})
 	}
 	return status, nil
 }
@@ -1836,6 +1842,22 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		}
 	}()
 
+	// accumulator for canonical blocks
+	var canonAccum []*types.Block
+
+	emitAccum := func() {
+		size := len(canonAccum)
+		if size == 0 || size > 5 {
+			// avoid reporting events for large sync events
+			return
+		}
+		bc.chain2HeadFeed.Send(Chain2HeadEvent{
+			Type:     Chain2HeadCanonicalEvent,
+			NewChain: canonAccum,
+		})
+		canonAccum = canonAccum[:0]
+	}
+
 	for ; block != nil && err == nil || err == ErrKnownBlock; block, err = it.next() {
 		// If the chain is terminating, stop processing blocks
 		if bc.insertStopped() {
@@ -1976,6 +1998,14 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		blockWriteTimer.Update(time.Since(substart) - statedb.AccountCommits - statedb.StorageCommits - statedb.SnapshotCommits)
 		blockInsertTimer.UpdateSince(start)
 
+		// BOR
+		if status == CanonStatTy {
+			canonAccum = append(canonAccum, block)
+		} else {
+			emitAccum()
+		}
+		// BOR
+
 		switch status {
 		case CanonStatTy:
 			log.Debug("Inserted new block", "number", block.Number(), "hash", block.Hash(),
@@ -2008,6 +2038,10 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, er
 		dirty, _ := bc.stateCache.TrieDB().Size()
 		stats.report(chain, it.index, dirty)
 	}
+
+	// BOR
+	emitAccum()
+	// BOR
 
 	// Any blocks remaining here? The only ones we care about are the future ones
 	if block != nil && errors.Is(err, consensus.ErrFutureBlock) {
@@ -2262,6 +2296,13 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 	}
 	// Ensure the user sees large reorgs
 	if len(oldChain) > 0 && len(newChain) > 0 {
+
+		bc.chain2HeadFeed.Send(Chain2HeadEvent{
+			Type:     Chain2HeadReorgEvent,
+			NewChain: newChain,
+			OldChain: oldChain,
+		})
+
 		logFn := log.Info
 		msg := "Chain reorg detected"
 		if len(oldChain) > 63 {
@@ -2568,6 +2609,11 @@ func (bc *BlockChain) SubscribeChainEvent(ch chan<- ChainEvent) event.Subscripti
 // SubscribeChainHeadEvent registers a subscription of ChainHeadEvent.
 func (bc *BlockChain) SubscribeChainHeadEvent(ch chan<- ChainHeadEvent) event.Subscription {
 	return bc.scope.Track(bc.chainHeadFeed.Subscribe(ch))
+}
+
+// SubscribeChain2HeadEvent registers a subscription of ChainHeadEvent. ()
+func (bc *BlockChain) SubscribeChain2HeadEvent(ch chan<- Chain2HeadEvent) event.Subscription {
+	return bc.scope.Track(bc.chain2HeadFeed.Subscribe(ch))
 }
 
 // SubscribeChainSideEvent registers a subscription of ChainSideEvent.
