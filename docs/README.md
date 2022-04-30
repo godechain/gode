@@ -14,7 +14,7 @@ Technological innovation is the driving force behind the advancement of the bloc
 - Average block interval: 3s
 
 ## Consensus Mechanism
-DPoS consensus mechanism: it has the characteristics of low transaction cost, low transaction delay, and high transaction concurrency.
+PoSA consensus mechanism: it has the characteristics of low transaction cost, low transaction delay, and high transaction concurrency.
 
 The maximum number of validators supported is 21.
 
