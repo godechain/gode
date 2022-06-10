@@ -29,7 +29,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/forkid"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/les/flowcontrol"
@@ -1043,9 +1042,6 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 	if server.config.UltraLightOnlyAnnounce {
 		recentTx = txIndexDisabled
 	}
-	if recentTx != txIndexUnlimited && p.version < lpv4 {
-		return errors.New("Cannot serve old clients without a complete tx index")
-	}
 	// Note: clientPeer.headInfo should contain the last head announced to the client by us.
 	// The values announced in the handshake are dummy values for compatibility reasons and should be ignored.
 	p.headInfo = blockInfo{Hash: head, Number: headNum, Td: td}
@@ -1058,7 +1054,7 @@ func (p *clientPeer) Handshake(td *big.Int, head common.Hash, headNum uint64, ge
 
 			// If local ethereum node is running in archive mode, advertise ourselves we have
 			// all version state data. Otherwise only recent state is available.
-			stateRecent := uint64(core.TriesInMemory - blockSafetyMargin)
+			stateRecent := server.handler.blockchain.TriesInMemory() - blockSafetyMargin
 			if server.archiveMode {
 				stateRecent = 0
 			}

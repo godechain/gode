@@ -1762,7 +1762,7 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 	}
 	os.RemoveAll(datadir)
 
-	db, err := rawdb.NewLevelDBDatabaseWithFreezer(datadir, 0, 0, datadir, "", false)
+	db, err := rawdb.NewLevelDBDatabaseWithFreezer(datadir, 0, 0, datadir, "", false, false, false)
 	if err != nil {
 		t.Fatalf("Failed to create persistent database: %v", err)
 	}
@@ -1770,7 +1770,7 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 
 	// Initialize a fresh chain
 	var (
-		genesis = (&Genesis{BaseFee: big.NewInt(params.InitialBaseFee)}).MustCommit(db)
+		genesis = new(Genesis).MustCommit(db)
 		engine  = ethash.NewFullFaker()
 		config  = &CacheConfig{
 			TrieCleanLimit: 256,
@@ -1783,6 +1783,7 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 		config.SnapshotLimit = 256
 		config.SnapshotWait = true
 	}
+	config.TriesInMemory = 128
 	chain, err := NewBlockChain(db, config, params.AllEthashProtocolChanges, engine, vm.Config{}, nil, nil)
 	if err != nil {
 		t.Fatalf("Failed to create chain: %v", err)
@@ -1812,6 +1813,7 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 			}
 		}
 	}
+
 	if _, err := chain.InsertChain(canonblocks[tt.commitBlock:]); err != nil {
 		t.Fatalf("Failed to import canonical chain tail: %v", err)
 	}
@@ -1830,7 +1832,7 @@ func testRepair(t *testing.T, tt *rewindTest, snapshots bool) {
 	db.Close()
 
 	// Start a new blockchain back up and see where the repait leads us
-	db, err = rawdb.NewLevelDBDatabaseWithFreezer(datadir, 0, 0, datadir, "", false)
+	db, err = rawdb.NewLevelDBDatabaseWithFreezer(datadir, 0, 0, datadir, "", false, false, false)
 	if err != nil {
 		t.Fatalf("Failed to reopen persistent database: %v", err)
 	}

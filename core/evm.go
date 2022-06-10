@@ -37,19 +37,12 @@ type ChainContext interface {
 
 // NewEVMBlockContext creates a new context for use in the EVM.
 func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common.Address) vm.BlockContext {
-	var (
-		beneficiary common.Address
-		baseFee     *big.Int
-	)
-
 	// If we don't have an explicit author (i.e. not mining), extract from the header
+	var beneficiary common.Address
 	if author == nil {
 		beneficiary, _ = chain.Engine().Author(header) // Ignore error, we're past header validation
 	} else {
 		beneficiary = *author
-	}
-	if header.BaseFee != nil {
-		baseFee = new(big.Int).Set(header.BaseFee)
 	}
 	return vm.BlockContext{
 		CanTransfer: CanTransfer,
@@ -59,7 +52,6 @@ func NewEVMBlockContext(header *types.Header, chain ChainContext, author *common
 		BlockNumber: new(big.Int).Set(header.Number),
 		Time:        new(big.Int).SetUint64(header.Time),
 		Difficulty:  new(big.Int).Set(header.Difficulty),
-		BaseFee:     baseFee,
 		GasLimit:    header.GasLimit,
 	}
 }
@@ -114,17 +106,6 @@ func CanTransfer(db vm.StateDB, addr common.Address, amount *big.Int) bool {
 
 // Transfer subtracts amount from sender and adds amount to recipient using the given Db
 func Transfer(db vm.StateDB, sender, recipient common.Address, amount *big.Int) {
-	// get inputs before
-	input1 := db.GetBalance(sender)
-	input2 := db.GetBalance(recipient)
-
 	db.SubBalance(sender, amount)
 	db.AddBalance(recipient, amount)
-
-	// get outputs after
-	output1 := db.GetBalance(sender)
-	output2 := db.GetBalance(recipient)
-
-	// add transfer log
-	AddTransferLog(db, sender, recipient, amount, input1, input2, output1, output2)
 }

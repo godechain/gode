@@ -33,7 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind/backends"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/mclock"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
+	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/contracts/checkpointoracle/contract"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/forkid"
@@ -55,7 +55,7 @@ import (
 var (
 	bankKey, _ = crypto.GenerateKey()
 	bankAddr   = crypto.PubkeyToAddress(bankKey.PublicKey)
-	bankFunds  = big.NewInt(1_000_000_000_000_000_000)
+	bankFunds  = big.NewInt(1000000000000000000)
 
 	userKey1, _ = crypto.GenerateKey()
 	userKey2, _ = crypto.GenerateKey()
@@ -123,7 +123,7 @@ func prepare(n int, backend *backends.SimulatedBackend) {
 
 			// bankUser transfers some ether to user1
 			nonce, _ := backend.PendingNonceAt(ctx, bankAddr)
-			tx, _ := types.SignTx(types.NewTransaction(nonce, userAddr1, big.NewInt(10_000_000_000_000_000), params.TxGas, big.NewInt(params.InitialBaseFee), nil), signer, bankKey)
+			tx, _ := types.SignTx(types.NewTransaction(nonce, userAddr1, big.NewInt(10000), params.TxGas, nil, nil), signer, bankKey)
 			backend.SendTransaction(ctx, tx)
 		case 1:
 			// Builtin-block
@@ -134,20 +134,20 @@ func prepare(n int, backend *backends.SimulatedBackend) {
 			userNonce1, _ := backend.PendingNonceAt(ctx, userAddr1)
 
 			// bankUser transfers more ether to user1
-			tx1, _ := types.SignTx(types.NewTransaction(bankNonce, userAddr1, big.NewInt(1_000_000_000_000_000), params.TxGas, big.NewInt(params.InitialBaseFee), nil), signer, bankKey)
+			tx1, _ := types.SignTx(types.NewTransaction(bankNonce, userAddr1, big.NewInt(1000), params.TxGas, nil, nil), signer, bankKey)
 			backend.SendTransaction(ctx, tx1)
 
 			// user1 relays ether to user2
-			tx2, _ := types.SignTx(types.NewTransaction(userNonce1, userAddr2, big.NewInt(1_000_000_000_000_000), params.TxGas, big.NewInt(params.InitialBaseFee), nil), signer, userKey1)
+			tx2, _ := types.SignTx(types.NewTransaction(userNonce1, userAddr2, big.NewInt(1000), params.TxGas, nil, nil), signer, userKey1)
 			backend.SendTransaction(ctx, tx2)
 
 			// user1 deploys a test contract
-			tx3, _ := types.SignTx(types.NewContractCreation(userNonce1+1, big.NewInt(0), 200000, big.NewInt(params.InitialBaseFee), testContractCode), signer, userKey1)
+			tx3, _ := types.SignTx(types.NewContractCreation(userNonce1+1, big.NewInt(0), 200000, big.NewInt(0), testContractCode), signer, userKey1)
 			backend.SendTransaction(ctx, tx3)
 			testContractAddr = crypto.CreateAddress(userAddr1, userNonce1+1)
 
 			// user1 deploys a event contract
-			tx4, _ := types.SignTx(types.NewContractCreation(userNonce1+2, big.NewInt(0), 200000, big.NewInt(params.InitialBaseFee), testEventEmitterCode), signer, userKey1)
+			tx4, _ := types.SignTx(types.NewContractCreation(userNonce1+2, big.NewInt(0), 200000, big.NewInt(0), testEventEmitterCode), signer, userKey1)
 			backend.SendTransaction(ctx, tx4)
 		case 2:
 			// Builtin-block
@@ -156,12 +156,12 @@ func prepare(n int, backend *backends.SimulatedBackend) {
 
 			// bankUser transfer some ether to signer
 			bankNonce, _ := backend.PendingNonceAt(ctx, bankAddr)
-			tx1, _ := types.SignTx(types.NewTransaction(bankNonce, signerAddr, big.NewInt(1000000000), params.TxGas, big.NewInt(params.InitialBaseFee), nil), signer, bankKey)
+			tx1, _ := types.SignTx(types.NewTransaction(bankNonce, signerAddr, big.NewInt(1000000000), params.TxGas, nil, nil), signer, bankKey)
 			backend.SendTransaction(ctx, tx1)
 
 			// invoke test contract
 			data := common.Hex2Bytes("C16431B900000000000000000000000000000000000000000000000000000000000000010000000000000000000000000000000000000000000000000000000000000001")
-			tx2, _ := types.SignTx(types.NewTransaction(bankNonce+1, testContractAddr, big.NewInt(0), 100000, big.NewInt(params.InitialBaseFee), data), signer, bankKey)
+			tx2, _ := types.SignTx(types.NewTransaction(bankNonce+1, testContractAddr, big.NewInt(0), 100000, nil, data), signer, bankKey)
 			backend.SendTransaction(ctx, tx2)
 		case 3:
 			// Builtin-block
@@ -171,7 +171,7 @@ func prepare(n int, backend *backends.SimulatedBackend) {
 			// invoke test contract
 			bankNonce, _ := backend.PendingNonceAt(ctx, bankAddr)
 			data := common.Hex2Bytes("C16431B900000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000002")
-			tx, _ := types.SignTx(types.NewTransaction(bankNonce, testContractAddr, big.NewInt(0), 100000, big.NewInt(params.InitialBaseFee), data), signer, bankKey)
+			tx, _ := types.SignTx(types.NewTransaction(bankNonce, testContractAddr, big.NewInt(0), 100000, nil, data), signer, bankKey)
 			backend.SendTransaction(ctx, tx)
 		}
 		backend.Commit()
@@ -192,12 +192,11 @@ func testIndexers(db ethdb.Database, odr light.OdrBackend, config *light.Indexer
 func newTestClientHandler(backend *backends.SimulatedBackend, odr *LesOdr, indexers []*core.ChainIndexer, db ethdb.Database, peers *serverPeerSet, ulcServers []string, ulcFraction int) (*clientHandler, func()) {
 	var (
 		evmux  = new(event.TypeMux)
-		engine = ethash.NewFaker()
+		engine = consensus.Engine(nil)
 		gspec  = core.Genesis{
 			Config:   params.AllEthashProtocolChanges,
 			Alloc:    core.GenesisAlloc{bankAddr: {Balance: bankFunds}},
 			GasLimit: 100000000,
-			BaseFee:  big.NewInt(params.InitialBaseFee),
 		}
 		oracle *checkpointoracle.CheckpointOracle
 	)
@@ -257,7 +256,6 @@ func newTestServerHandler(blocks int, indexers []*core.ChainIndexer, db ethdb.Da
 			Config:   params.AllEthashProtocolChanges,
 			Alloc:    core.GenesisAlloc{bankAddr: {Balance: bankFunds}},
 			GasLimit: 100000000,
-			BaseFee:  big.NewInt(params.InitialBaseFee),
 		}
 		oracle *checkpointoracle.CheckpointOracle
 	)
@@ -375,7 +373,7 @@ func (p *testPeer) handshakeWithClient(t *testing.T, td *big.Int, head common.Ha
 	sendList = sendList.add("serveHeaders", nil)
 	sendList = sendList.add("serveChainSince", uint64(0))
 	sendList = sendList.add("serveStateSince", uint64(0))
-	sendList = sendList.add("serveRecentState", uint64(core.TriesInMemory-4))
+	sendList = sendList.add("serveRecentState", uint64(128-4))
 	sendList = sendList.add("txRelay", nil)
 	sendList = sendList.add("flowControl/BL", testBufLimit)
 	sendList = sendList.add("flowControl/MRR", testBufRecharge)
@@ -398,7 +396,7 @@ func (p *testPeer) close() {
 	p.app.Close()
 }
 
-func newTestPeerPair(name string, version int, server *serverHandler, client *clientHandler, noInitAnnounce bool) (*testPeer, *testPeer, error) {
+func newTestPeerPair(name string, version int, server *serverHandler, client *clientHandler) (*testPeer, *testPeer, error) {
 	// Create a message pipe to communicate through
 	app, net := p2p.MsgPipe()
 
@@ -423,16 +421,16 @@ func newTestPeerPair(name string, version int, server *serverHandler, client *cl
 		select {
 		case <-client.closeCh:
 			errc2 <- p2p.DiscQuitting
-		case errc2 <- client.handle(peer2, noInitAnnounce):
+		case errc2 <- client.handle(peer2):
 		}
 	}()
 	// Ensure the connection is established or exits when any error occurs
 	for {
 		select {
 		case err := <-errc1:
-			return nil, nil, fmt.Errorf("failed to establish protocol connection %v", err)
+			return nil, nil, fmt.Errorf("Failed to establish protocol connection %v", err)
 		case err := <-errc2:
-			return nil, nil, fmt.Errorf("failed to establish protocol connection %v", err)
+			return nil, nil, fmt.Errorf("Failed to establish protocol connection %v", err)
 		default:
 		}
 		if atomic.LoadUint32(&peer1.serving) == 1 && atomic.LoadUint32(&peer2.serving) == 1 {
@@ -473,7 +471,7 @@ func (client *testClient) newRawPeer(t *testing.T, name string, version int, rec
 		select {
 		case <-client.handler.closeCh:
 			errCh <- p2p.DiscQuitting
-		case errCh <- client.handler.handle(peer, false):
+		case errCh <- client.handler.handle(peer):
 		}
 	}()
 	tp := &testPeer{
@@ -623,7 +621,7 @@ func newClientServerEnv(t *testing.T, config testnetConfig) (*testServer, *testC
 	if config.connect {
 		done := make(chan struct{})
 		client.syncEnd = func(_ *types.Header) { close(done) }
-		cpeer, speer, err = newTestPeerPair("peer", config.protocol, server, client, false)
+		cpeer, speer, err = newTestPeerPair("peer", config.protocol, server, client)
 		if err != nil {
 			t.Fatalf("Failed to connect testing peers %v", err)
 		}

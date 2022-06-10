@@ -30,7 +30,9 @@ import (
 
 // Constants to match up protocol versions and messages
 const (
+	ETH65 = 65
 	ETH66 = 66
+	ETH67 = 67
 )
 
 // ProtocolName is the official short name of the `eth` protocol used during
@@ -39,31 +41,37 @@ const ProtocolName = "eth"
 
 // ProtocolVersions are the supported versions of the `eth` protocol (first
 // is primary).
-var ProtocolVersions = []uint{ETH66}
+var ProtocolVersions = []uint{ETH67, ETH66, ETH65}
 
 // protocolLengths are the number of implemented message corresponding to
 // different protocol versions.
-var protocolLengths = map[uint]uint64{ETH66: 17}
+var protocolLengths = map[uint]uint64{ETH67: 18, ETH66: 17, ETH65: 17}
 
 // maxMessageSize is the maximum cap on the size of a protocol message.
 const maxMessageSize = 10 * 1024 * 1024
 
 const (
-	StatusMsg                     = 0x00
-	NewBlockHashesMsg             = 0x01
-	TransactionsMsg               = 0x02
-	GetBlockHeadersMsg            = 0x03
-	BlockHeadersMsg               = 0x04
-	GetBlockBodiesMsg             = 0x05
-	BlockBodiesMsg                = 0x06
-	NewBlockMsg                   = 0x07
-	GetNodeDataMsg                = 0x0d
-	NodeDataMsg                   = 0x0e
-	GetReceiptsMsg                = 0x0f
-	ReceiptsMsg                   = 0x10
+	// Protocol messages in eth/64
+	StatusMsg          = 0x00
+	NewBlockHashesMsg  = 0x01
+	TransactionsMsg    = 0x02
+	GetBlockHeadersMsg = 0x03
+	BlockHeadersMsg    = 0x04
+	GetBlockBodiesMsg  = 0x05
+	BlockBodiesMsg     = 0x06
+	NewBlockMsg        = 0x07
+	GetNodeDataMsg     = 0x0d
+	NodeDataMsg        = 0x0e
+	GetReceiptsMsg     = 0x0f
+	ReceiptsMsg        = 0x10
+
+	// Protocol messages overloaded in eth/65
 	NewPooledTransactionHashesMsg = 0x08
 	GetPooledTransactionsMsg      = 0x09
 	PooledTransactionsMsg         = 0x0a
+
+	// Protocol messages overloaded in eth/66
+	UpgradeStatusMsg = 0x0b
 )
 
 var (
@@ -91,6 +99,35 @@ type StatusPacket struct {
 	Head            common.Hash
 	Genesis         common.Hash
 	ForkID          forkid.ID
+}
+
+type UpgradeStatusExtension struct {
+	DisablePeerTxBroadcast bool
+}
+
+func (e *UpgradeStatusExtension) Encode() (*rlp.RawValue, error) {
+	rawBytes, err := rlp.EncodeToBytes(e)
+	if err != nil {
+		return nil, err
+	}
+	raw := rlp.RawValue(rawBytes)
+	return &raw, nil
+}
+
+type UpgradeStatusPacket struct {
+	Extension *rlp.RawValue `rlp:"nil"`
+}
+
+func (p *UpgradeStatusPacket) GetExtension() (*UpgradeStatusExtension, error) {
+	extension := &UpgradeStatusExtension{}
+	if p.Extension == nil {
+		return extension, nil
+	}
+	err := rlp.DecodeBytes(*p.Extension, extension)
+	if err != nil {
+		return nil, err
+	}
+	return extension, nil
 }
 
 // NewBlockHashesPacket is the network packet for the block announcements.
@@ -124,7 +161,7 @@ type GetBlockHeadersPacket struct {
 	Reverse bool         // Query direction (false = rising towards latest, true = falling towards genesis)
 }
 
-// GetBlockHeadersPacket66 represents a block header query over eth/66
+// GetBlockHeadersPacket represents a block header query over eth/66
 type GetBlockHeadersPacket66 struct {
 	RequestId uint64
 	*GetBlockHeadersPacket
@@ -319,6 +356,9 @@ type PooledTransactionsRLPPacket66 struct {
 
 func (*StatusPacket) Name() string { return "Status" }
 func (*StatusPacket) Kind() byte   { return StatusMsg }
+
+func (*UpgradeStatusPacket) Name() string { return "UpgradeStatus" }
+func (*UpgradeStatusPacket) Kind() byte   { return UpgradeStatusMsg }
 
 func (*NewBlockHashesPacket) Name() string { return "NewBlockHashes" }
 func (*NewBlockHashesPacket) Kind() byte   { return NewBlockHashesMsg }

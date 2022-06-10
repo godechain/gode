@@ -37,7 +37,6 @@ const (
 	wsWriteBuffer      = 1024
 	wsPingInterval     = 60 * time.Second
 	wsPingWriteTimeout = 5 * time.Second
-	wsPongTimeout      = 30 * time.Second
 	wsMessageSizeLimit = 15 * 1024 * 1024
 )
 
@@ -97,7 +96,7 @@ func wsHandshakeValidator(allowedOrigins []string) func(*http.Request) bool {
 		if _, ok := req.Header["Origin"]; !ok {
 			return true
 		}
-		// Verify origin against allow list.
+		// Verify origin against whitelist.
 		origin := strings.ToLower(req.Header.Get("Origin"))
 		if allowAllOrigins || originIsAllowed(origins, origin) {
 			return true
@@ -242,10 +241,6 @@ type websocketCodec struct {
 
 func newWebsocketCodec(conn *websocket.Conn) ServerCodec {
 	conn.SetReadLimit(wsMessageSizeLimit)
-	conn.SetPongHandler(func(appData string) error {
-		conn.SetReadDeadline(time.Time{})
-		return nil
-	})
 	wc := &websocketCodec{
 		jsonCodec: NewFuncCodec(conn, conn.WriteJSON, conn.ReadJSON).(*jsonCodec),
 		conn:      conn,
@@ -292,7 +287,6 @@ func (wc *websocketCodec) pingLoop() {
 			wc.jsonCodec.encMu.Lock()
 			wc.conn.SetWriteDeadline(time.Now().Add(wsPingWriteTimeout))
 			wc.conn.WriteMessage(websocket.PingMessage, nil)
-			wc.conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
 			wc.jsonCodec.encMu.Unlock()
 			timer.Reset(wsPingInterval)
 		}

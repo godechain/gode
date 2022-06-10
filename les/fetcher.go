@@ -27,8 +27,8 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/eth/fetcher"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/les/fetcher"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -153,7 +153,9 @@ type lightFetcher struct {
 	synchronise func(peer *serverPeer)
 
 	// Test fields or hooks
+	noAnnounce  bool
 	newHeadHook func(*types.Header)
+	newAnnounce func(*serverPeer, *announceData)
 }
 
 // newLightFetcher creates a light fetcher instance.
@@ -337,7 +339,7 @@ func (f *lightFetcher) mainloop() {
 					log.Debug("Trigger light sync", "peer", peerid, "local", localHead.Number, "localhash", localHead.Hash(), "remote", data.Number, "remotehash", data.Hash)
 					continue
 				}
-				f.fetcher.Notify(peerid.String(), data.Hash, data.Number, time.Now(), f.requestHeaderByHash(peerid), nil)
+				f.fetcher.Notify(peerid.String(), data.Hash, data.Number, time.Now(), f.requestHeaderByHash(peerid), nil, nil)
 				log.Debug("Trigger header retrieval", "peer", peerid, "number", data.Number, "hash", data.Hash)
 			}
 			// Keep collecting announces from trusted server even we are syncing.
@@ -353,7 +355,7 @@ func (f *lightFetcher) mainloop() {
 						continue
 					}
 					p := agreed[rand.Intn(len(agreed))]
-					f.fetcher.Notify(p.String(), data.Hash, data.Number, time.Now(), f.requestHeaderByHash(p), nil)
+					f.fetcher.Notify(p.String(), data.Hash, data.Number, time.Now(), f.requestHeaderByHash(p), nil, nil)
 					log.Debug("Trigger trusted header retrieval", "number", data.Number, "hash", data.Hash)
 				}
 			}
@@ -472,6 +474,12 @@ func (f *lightFetcher) mainloop() {
 
 // announce processes a new announcement message received from a peer.
 func (f *lightFetcher) announce(p *serverPeer, head *announceData) {
+	if f.newAnnounce != nil {
+		f.newAnnounce(p, head)
+	}
+	if f.noAnnounce {
+		return
+	}
 	select {
 	case f.announceCh <- &announce{peerid: p.ID(), trust: p.trusted, data: head}:
 	case <-f.closeCh:
@@ -499,7 +507,7 @@ func (f *lightFetcher) requestHeaderByHash(peerid enode.ID) func(common.Hash) er
 			getCost: func(dp distPeer) uint64 { return dp.(*serverPeer).getRequestCost(GetBlockHeadersMsg, 1) },
 			canSend: func(dp distPeer) bool { return dp.(*serverPeer).ID() == peerid },
 			request: func(dp distPeer) func() {
-				peer, id := dp.(*serverPeer), rand.Uint64()
+				peer, id := dp.(*serverPeer), genReqID()
 				cost := peer.getRequestCost(GetBlockHeadersMsg, 1)
 				peer.fcServer.QueuedRequest(id, cost)
 

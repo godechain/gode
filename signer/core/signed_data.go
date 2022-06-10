@@ -29,17 +29,16 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/common/math"
 	"github.com/ethereum/go-ethereum/consensus/clique"
+	"github.com/ethereum/go-ethereum/consensus/parlia"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 )
 
 type SigFormat struct {
@@ -60,9 +59,9 @@ var (
 		accounts.MimetypeClique,
 		0x02,
 	}
-	ApplicationBor = SigFormat{
-		accounts.MimetypeBor,
-		0x10,
+	ApplicationParlia = SigFormat{
+		accounts.MimetypeParlia,
+		0x03,
 	}
 	TextPlain = SigFormat{
 		accounts.MimetypeTextPlain,
@@ -105,8 +104,7 @@ func (t *Type) isReferenceType() bool {
 		return false
 	}
 	// Reference types must have a leading uppercase character
-	r, _ := utf8.DecodeRuneInString(t.Type)
-	return unicode.IsUpper(r)
+	return unicode.IsUpper([]rune(t.Type)[0])
 }
 
 type Types map[string][]Type
@@ -265,6 +263,41 @@ func (api *SignerAPI) determineSignatureFormat(ctx context.Context, contentType 
 		// Clique uses V on the form 0 or 1
 		useEthereumV = false
 		req = &SignDataRequest{ContentType: mediaType, Rawdata: cliqueRlp, Messages: messages, Hash: sighash}
+	case ApplicationParlia.Mime:
+		stringData, ok := data.(string)
+		if !ok {
+			return nil, useEthereumV, fmt.Errorf("input for %v must be an hex-encoded string", ApplicationParlia.Mime)
+		}
+		parliaData, err := hexutil.Decode(stringData)
+		if err != nil {
+			return nil, useEthereumV, err
+		}
+		header := &types.Header{}
+		if err := rlp.DecodeBytes(parliaData, header); err != nil {
+			return nil, useEthereumV, err
+		}
+		// The incoming parlia header is already truncated, sent to us with a extradata already shortened
+		if len(header.Extra) < 65 {
+			// Need to add it back, to get a suitable length for hashing
+			newExtra := make([]byte, len(header.Extra)+65)
+			copy(newExtra, header.Extra)
+			header.Extra = newExtra
+		}
+		// Get back the rlp data, encoded by us
+		sighash, parliaRlp, err := parliaHeaderHashAndRlp(header, api.chainID)
+		if err != nil {
+			return nil, useEthereumV, err
+		}
+		messages := []*NameValueType{
+			{
+				Name:  "Parlia header",
+				Typ:   "parlia",
+				Value: fmt.Sprintf("parlia header %d [0x%x]", header.Number, header.Hash()),
+			},
+		}
+		// Parlia uses V on the form 0 or 1
+		useEthereumV = false
+		req = &SignDataRequest{ContentType: mediaType, Rawdata: parliaRlp, Messages: messages, Hash: sighash}
 	default: // also case TextPlain.Mime:
 		// Calculates an Ethereum ECDSA signature for:
 		// hash = keccak256("\x19${byteVersion}Ethereum Signed Message:\n${message length}${message}")
@@ -317,6 +350,16 @@ func cliqueHeaderHashAndRlp(header *types.Header) (hash, rlp []byte, err error) 
 	return hash, rlp, err
 }
 
+func parliaHeaderHashAndRlp(header *types.Header, chainId *big.Int) (hash, rlp []byte, err error) {
+	if len(header.Extra) < 65 {
+		err = fmt.Errorf("clique header extradata too short, %d < 65", len(header.Extra))
+		return
+	}
+	rlp = parlia.ParliaRLP(header, chainId)
+	hash = parlia.SealHash(header, chainId).Bytes()
+	return hash, rlp, err
+}
+
 // SignTypedData signs EIP-712 conformant typed data
 // hash = keccak256("\x19${byteVersion}${domainSeparator}${hashStruct(message)}")
 // It returns
@@ -330,7 +373,7 @@ func (api *SignerAPI) SignTypedData(ctx context.Context, addr common.MixedcaseAd
 // signTypedData is identical to the capitalized version, except that it also returns the hash (preimage)
 // - the signature preimage (hash)
 func (api *SignerAPI) signTypedData(ctx context.Context, addr common.MixedcaseAddress,
-	typedData TypedData, validationMessages *apitypes.ValidationMessages) (hexutil.Bytes, hexutil.Bytes, error) {
+	typedData TypedData, validationMessages *ValidationMessages) (hexutil.Bytes, hexutil.Bytes, error) {
 	domainSeparator, err := typedData.HashStruct("EIP712Domain", typedData.Domain.Map())
 	if err != nil {
 		return nil, nil, err

@@ -19,8 +19,6 @@ package rawdb
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
-	"fmt"
 	"math/big"
 	"sort"
 
@@ -79,37 +77,6 @@ func ReadAllHashes(db ethdb.Iteratee, number uint64) []common.Hash {
 		if key := it.Key(); len(key) == len(prefix)+32 {
 			hashes = append(hashes, common.BytesToHash(key[len(key)-32:]))
 		}
-	}
-	return hashes
-}
-
-type NumberHash struct {
-	Number uint64
-	Hash   common.Hash
-}
-
-// ReadAllHashes retrieves all the hashes assigned to blocks at a certain heights,
-// both canonical and reorged forks included.
-// This method considers both limits to be _inclusive_.
-func ReadAllHashesInRange(db ethdb.Iteratee, first, last uint64) []*NumberHash {
-	var (
-		start     = encodeBlockNumber(first)
-		keyLength = len(headerPrefix) + 8 + 32
-		hashes    = make([]*NumberHash, 0, 1+last-first)
-		it        = db.NewIterator(headerPrefix, start)
-	)
-	defer it.Release()
-	for it.Next() {
-		key := it.Key()
-		if len(key) != keyLength {
-			continue
-		}
-		num := binary.BigEndian.Uint64(key[len(headerPrefix) : len(headerPrefix)+8])
-		if num > last {
-			break
-		}
-		hash := common.BytesToHash(key[len(key)-32:])
-		hashes = append(hashes, &NumberHash{num, hash})
 	}
 	return hashes
 }
@@ -480,6 +447,44 @@ func WriteBody(db ethdb.KeyValueWriter, hash common.Hash, number uint64, body *t
 	WriteBodyRLP(db, hash, number, data)
 }
 
+func WriteDiffLayer(db ethdb.KeyValueWriter, hash common.Hash, layer *types.DiffLayer) {
+	data, err := rlp.EncodeToBytes(layer)
+	if err != nil {
+		log.Crit("Failed to RLP encode diff layer", "err", err)
+	}
+	WriteDiffLayerRLP(db, hash, data)
+}
+
+func WriteDiffLayerRLP(db ethdb.KeyValueWriter, blockHash common.Hash, rlp rlp.RawValue) {
+	if err := db.Put(diffLayerKey(blockHash), rlp); err != nil {
+		log.Crit("Failed to store diff layer", "err", err)
+	}
+}
+
+func ReadDiffLayer(db ethdb.KeyValueReader, blockHash common.Hash) *types.DiffLayer {
+	data := ReadDiffLayerRLP(db, blockHash)
+	if len(data) == 0 {
+		return nil
+	}
+	diff := new(types.DiffLayer)
+	if err := rlp.Decode(bytes.NewReader(data), diff); err != nil {
+		log.Error("Invalid diff layer RLP", "hash", blockHash, "err", err)
+		return nil
+	}
+	return diff
+}
+
+func ReadDiffLayerRLP(db ethdb.KeyValueReader, blockHash common.Hash) rlp.RawValue {
+	data, _ := db.Get(diffLayerKey(blockHash))
+	return data
+}
+
+func DeleteDiffLayer(db ethdb.KeyValueWriter, blockHash common.Hash) {
+	if err := db.Delete(diffLayerKey(blockHash)); err != nil {
+		log.Crit("Failed to delete diffLayer", "err", err)
+	}
+}
+
 // DeleteBody removes all block body data associated with a hash.
 func DeleteBody(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	if err := db.Delete(blockBodyKey(number, hash)); err != nil {
@@ -664,86 +669,6 @@ func DeleteReceipts(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	}
 }
 
-// storedReceiptRLP is the storage encoding of a receipt.
-// Re-definition in core/types/receipt.go.
-type storedReceiptRLP struct {
-	PostStateOrStatus []byte
-	CumulativeGasUsed uint64
-	Logs              []*types.LogForStorage
-}
-
-// ReceiptLogs is a barebone version of ReceiptForStorage which only keeps
-// the list of logs. When decoding a stored receipt into this object we
-// avoid creating the bloom filter.
-type receiptLogs struct {
-	Logs []*types.Log
-}
-
-// DecodeRLP implements rlp.Decoder.
-func (r *receiptLogs) DecodeRLP(s *rlp.Stream) error {
-	var stored storedReceiptRLP
-	if err := s.Decode(&stored); err != nil {
-		return err
-	}
-	r.Logs = make([]*types.Log, len(stored.Logs))
-	for i, log := range stored.Logs {
-		r.Logs[i] = (*types.Log)(log)
-	}
-	return nil
-}
-
-// DeriveLogFields fills the logs in receiptLogs with information such as block number, txhash, etc.
-func deriveLogFields(receipts []*receiptLogs, hash common.Hash, number uint64, txs types.Transactions) error {
-	logIndex := uint(0)
-	if len(txs) != len(receipts) {
-		return errors.New("transaction and receipt count mismatch")
-	}
-	for i := 0; i < len(receipts); i++ {
-		txHash := txs[i].Hash()
-		// The derived log fields can simply be set from the block and transaction
-		for j := 0; j < len(receipts[i].Logs); j++ {
-			receipts[i].Logs[j].BlockNumber = number
-			receipts[i].Logs[j].BlockHash = hash
-			receipts[i].Logs[j].TxHash = txHash
-			receipts[i].Logs[j].TxIndex = uint(i)
-			receipts[i].Logs[j].Index = logIndex
-			logIndex++
-		}
-	}
-	return nil
-}
-
-// ReadLogs retrieves the logs for all transactions in a block. The log fields
-// are populated with metadata. In case the receipts or the block body
-// are not found, a nil is returned.
-func ReadLogs(db ethdb.Reader, hash common.Hash, number uint64) [][]*types.Log {
-	// Retrieve the flattened receipt slice
-	data := ReadReceiptsRLP(db, hash, number)
-	if len(data) == 0 {
-		return nil
-	}
-	receipts := []*receiptLogs{}
-	if err := rlp.DecodeBytes(data, &receipts); err != nil {
-		log.Error("Invalid receipt array RLP", "hash", hash, "err", err)
-		return nil
-	}
-
-	body := ReadBody(db, hash, number)
-	if body == nil {
-		log.Error("Missing body but have receipt", "hash", hash, "number", number)
-		return nil
-	}
-	if err := deriveLogFields(receipts, hash, number, body.Transactions); err != nil {
-		log.Error("Failed to derive block receipts fields", "hash", hash, "number", number, "err", err)
-		return nil
-	}
-	logs := make([][]*types.Log, len(receipts))
-	for i, receipt := range receipts {
-		logs[i] = receipt.Logs
-	}
-	return logs
-}
-
 // ReadBlock retrieves an entire block corresponding to the hash, assembling it
 // back from the stored header and body. If either the header or body could not
 // be retrieved nil is returned.
@@ -769,59 +694,34 @@ func WriteBlock(db ethdb.KeyValueWriter, block *types.Block) {
 }
 
 // WriteAncientBlock writes entire block data into ancient store and returns the total written size.
-func WriteAncientBlocks(db ethdb.AncientWriter, blocks []*types.Block, receipts []types.Receipts, borReceipts []types.Receipts, td *big.Int) (int64, error) {
-	var (
-		tdSum         = new(big.Int).Set(td)
-		stReceipts    []*types.ReceiptForStorage
-		borStReceipts []*types.ReceiptForStorage
-	)
-	return db.ModifyAncients(func(op ethdb.AncientWriteOp) error {
-		for i, block := range blocks {
-			// Convert receipts to storage format and sum up total difficulty.
-			stReceipts = stReceipts[:0]
-			for _, receipt := range receipts[i] {
-				stReceipts = append(stReceipts, (*types.ReceiptForStorage)(receipt))
-			}
-
-			// Convert bor receipts to storage format and sum up total difficulty.
-			borStReceipts = borStReceipts[:0]
-			for _, borReceipt := range borReceipts[i] {
-				borStReceipts = append(borStReceipts, (*types.ReceiptForStorage)(borReceipt))
-			}
-
-			header := block.Header()
-			if i > 0 {
-				tdSum.Add(tdSum, header.Difficulty)
-			}
-			if err := writeAncientBlock(op, block, header, stReceipts, borStReceipts, tdSum); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-}
-
-func writeAncientBlock(op ethdb.AncientWriteOp, block *types.Block, header *types.Header, receipts []*types.ReceiptForStorage, borReceipts []*types.ReceiptForStorage, td *big.Int) error {
-	num := block.NumberU64()
-	if err := op.AppendRaw(freezerHashTable, num, block.Hash().Bytes()); err != nil {
-		return fmt.Errorf("can't add block %d hash: %v", num, err)
+func WriteAncientBlock(db ethdb.AncientWriter, block *types.Block, receipts types.Receipts, td *big.Int) int {
+	// Encode all block components to RLP format.
+	headerBlob, err := rlp.EncodeToBytes(block.Header())
+	if err != nil {
+		log.Crit("Failed to RLP encode block header", "err", err)
 	}
-	if err := op.Append(freezerHeaderTable, num, header); err != nil {
-		return fmt.Errorf("can't append block header %d: %v", num, err)
+	bodyBlob, err := rlp.EncodeToBytes(block.Body())
+	if err != nil {
+		log.Crit("Failed to RLP encode body", "err", err)
 	}
-	if err := op.Append(freezerBodiesTable, num, block.Body()); err != nil {
-		return fmt.Errorf("can't append block body %d: %v", num, err)
+	storageReceipts := make([]*types.ReceiptForStorage, len(receipts))
+	for i, receipt := range receipts {
+		storageReceipts[i] = (*types.ReceiptForStorage)(receipt)
 	}
-	if err := op.Append(freezerReceiptTable, num, receipts); err != nil {
-		return fmt.Errorf("can't append block %d receipts: %v", num, err)
+	receiptBlob, err := rlp.EncodeToBytes(storageReceipts)
+	if err != nil {
+		log.Crit("Failed to RLP encode block receipts", "err", err)
 	}
-	if err := op.Append(freezerDifficultyTable, num, td); err != nil {
-		return fmt.Errorf("can't append block %d total difficulty: %v", num, err)
+	tdBlob, err := rlp.EncodeToBytes(td)
+	if err != nil {
+		log.Crit("Failed to RLP encode block total difficulty", "err", err)
 	}
-	if err := op.Append(freezerBorReceiptTable, num, borReceipts); err != nil {
-		return fmt.Errorf("can't append block %d borReceipts: %v", num, err)
+	// Write all blob to flatten files.
+	err = db.AppendAncient(block.NumberU64(), block.Hash().Bytes(), headerBlob, bodyBlob, receiptBlob, tdBlob)
+	if err != nil {
+		log.Crit("Failed to write block data to ancient store", "err", err)
 	}
-	return nil
+	return len(headerBlob) + len(bodyBlob) + len(receiptBlob) + len(tdBlob) + common.HashLength
 }
 
 // DeleteBlock removes all block data associated with a hash.
@@ -830,9 +730,6 @@ func DeleteBlock(db ethdb.KeyValueWriter, hash common.Hash, number uint64) {
 	DeleteHeader(db, hash, number)
 	DeleteBody(db, hash, number)
 	DeleteTd(db, hash, number)
-
-	// delete bor receipt
-	DeleteBorReceipt(db, hash, number)
 }
 
 // DeleteBlockWithoutNumber removes all block data associated with a hash, except
@@ -842,9 +739,6 @@ func DeleteBlockWithoutNumber(db ethdb.KeyValueWriter, hash common.Hash, number 
 	deleteHeaderWithoutNumber(db, hash, number)
 	DeleteBody(db, hash, number)
 	DeleteTd(db, hash, number)
-
-	// delete bor receipt
-	DeleteBorReceipt(db, hash, number)
 }
 
 const badBlockToKeep = 10

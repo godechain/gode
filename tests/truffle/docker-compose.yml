@@ -1,0 +1,62 @@
+version: "3"
+
+services:
+  genesis:
+    image: gode-genesis
+    env_file: .env
+    environment:
+      INIT_HOLDER_BALANCE: "500000000000000000000"
+      NUMS_OF_VALIDATOR: 1
+    volumes:
+      - ./storage:/root/storage
+      - ./scripts:/root/scripts
+      - ./config:/root/config
+      - ./init-holders:/root/init-holders
+    command: /root/scripts/bootstrap.sh
+
+  gode-rpc:
+    image: bsc
+    healthcheck:
+      test: nc -z localhost 8545
+      interval: 3s
+      timeout: 5s
+      retries: 15
+    env_file: .env
+    environment:
+      NODE_ID: gode-rpc
+    volumes:
+      - ./storage/gode-rpc:/root/.ethereum
+      - ./scripts:/scripts
+      - ./config:/config
+    entrypoint: [ "sh", "-c", "/scripts/gode-rpc.sh" ]
+
+  gode-validator1:
+    image: bsc
+    env_file: .env
+    environment:
+      NODE_ID: gode-validator1
+      BOOTSTRAP_HOST: gode-rpc
+    volumes:
+      - ./storage/gode-validator1:/root/.ethereum
+      - ./scripts:/scripts
+    entrypoint: [ "sh", "-c", "/scripts/gode-validator.sh" ]
+
+  truffle-test:
+    image: truffle-test
+    command: /scripts/truffle-test.sh
+    env_file: .env
+    environment:
+      RPC_HOST: gode-rpc
+      RPC_PORT: 8545
+    volumes:
+      - ./scripts:/scripts
+    depends_on:
+      gode-rpc:
+        condition: service_healthy
+
+networks:
+  default:
+    ipam:
+      driver: default
+      config:
+        - subnet: 99.1.0.0/16

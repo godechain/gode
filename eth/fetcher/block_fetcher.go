@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -32,14 +33,16 @@ import (
 )
 
 const (
-	lightTimeout  = time.Millisecond       // Time allowance before an announced header is explicitly requested
-	arriveTimeout = 500 * time.Millisecond // Time allowance before an announced block/transaction is explicitly requested
-	gatherSlack   = 100 * time.Millisecond // Interval used to collate almost-expired announces with fetches
-	fetchTimeout  = 5 * time.Second        // Maximum allotted time to return an explicitly requested block/transaction
+	lightTimeout        = time.Millisecond       // Time allowance before an announced header is explicitly requested
+	arriveTimeout       = 500 * time.Millisecond // Time allowance before an announced block/transaction is explicitly requested
+	gatherSlack         = 100 * time.Millisecond // Interval used to collate almost-expired announces with fetches
+	fetchTimeout        = 5 * time.Second        // Maximum allotted time to return an explicitly requested block/transaction
+	reQueueBlockTimeout = 500 * time.Millisecond // Time allowance before blocks are requeued for import
+
 )
 
 const (
-	maxUncleDist = 7   // Maximum allowed backward distance from the chain head
+	maxUncleDist = 11  // Maximum allowed backward distance from the chain head
 	maxQueueDist = 32  // Maximum allowed distance from the chain head to queue
 	hashLimit    = 256 // Maximum number of unique blocks or headers a peer may have announced
 	blockLimit   = 64  // Maximum number of unique blocks a peer may have delivered
@@ -79,6 +82,9 @@ type headerRequesterFn func(common.Hash) error
 // bodyRequesterFn is a callback type for sending a body retrieval request.
 type bodyRequesterFn func([]common.Hash) error
 
+// DiffRequesterFn is a callback type for sending a diff layer retrieval request.
+type DiffRequesterFn func([]common.Hash) error
+
 // headerVerifierFn is a callback type to verify a block's header for fast propagation.
 type headerVerifierFn func(header *types.Header) error
 
@@ -109,6 +115,8 @@ type blockAnnounce struct {
 
 	fetchHeader headerRequesterFn // Fetcher function to retrieve the header of an announced block
 	fetchBodies bodyRequesterFn   // Fetcher function to retrieve the body of an announced block
+	fetchDiffs  DiffRequesterFn   // Fetcher function to retrieve the diff layer of an announced block
+
 }
 
 // headerFilterTask represents a batch of headers needing fetcher filtering.
@@ -166,6 +174,8 @@ type BlockFetcher struct {
 	done chan common.Hash
 	quit chan struct{}
 
+	requeue chan *blockOrHeaderInject
+
 	// Announce states
 	announces  map[string]int                   // Per peer blockAnnounce counts to prevent memory exhaustion
 	announced  map[common.Hash][]*blockAnnounce // Announced blocks, scheduled for fetching
@@ -206,6 +216,7 @@ func NewBlockFetcher(light bool, getHeader HeaderRetrievalFn, getBlock blockRetr
 		bodyFilter:     make(chan chan *bodyFilterTask),
 		done:           make(chan common.Hash),
 		quit:           make(chan struct{}),
+		requeue:        make(chan *blockOrHeaderInject),
 		announces:      make(map[string]int),
 		announced:      make(map[common.Hash][]*blockAnnounce),
 		fetching:       make(map[common.Hash]*blockAnnounce),
@@ -240,7 +251,7 @@ func (f *BlockFetcher) Stop() {
 // Notify announces the fetcher of the potential availability of a new block in
 // the network.
 func (f *BlockFetcher) Notify(peer string, hash common.Hash, number uint64, time time.Time,
-	headerFetcher headerRequesterFn, bodyFetcher bodyRequesterFn) error {
+	headerFetcher headerRequesterFn, bodyFetcher bodyRequesterFn, diffFetcher DiffRequesterFn) error {
 	block := &blockAnnounce{
 		hash:        hash,
 		number:      number,
@@ -248,6 +259,7 @@ func (f *BlockFetcher) Notify(peer string, hash common.Hash, number uint64, time
 		origin:      peer,
 		fetchHeader: headerFetcher,
 		fetchBodies: bodyFetcher,
+		fetchDiffs:  diffFetcher,
 	}
 	select {
 	case f.notify <- block:
@@ -370,9 +382,9 @@ func (f *BlockFetcher) loop() {
 				continue
 			}
 			if f.light {
-				f.importHeaders(op.origin, op.header)
+				f.importHeaders(op)
 			} else {
-				f.importBlocks(op.origin, op.block)
+				f.importBlocks(op)
 			}
 		}
 		// Wait for an outside event to occur
@@ -414,6 +426,21 @@ func (f *BlockFetcher) loop() {
 			if len(f.announced) == 1 {
 				f.rescheduleFetch(fetchTimer)
 			}
+
+		case op := <-f.requeue:
+			// Re-queue blocks that have not been written due to fork block competition
+			number := int64(0)
+			hash := ""
+			if op.header != nil {
+				number = op.header.Number.Int64()
+				hash = op.header.Hash().String()
+			} else if op.block != nil {
+				number = op.block.Number().Int64()
+				hash = op.block.Hash().String()
+			}
+
+			log.Info("Re-queue blocks", "number", number, "hash", hash)
+			f.enqueue(op.origin, op.header, op.block)
 
 		case op := <-f.inject:
 			// A direct block insertion was requested, try and fill any pending gaps
@@ -460,15 +487,20 @@ func (f *BlockFetcher) loop() {
 
 				// Create a closure of the fetch and schedule in on a new thread
 				fetchHeader, hashes := f.fetching[hashes[0]].fetchHeader, hashes
-				go func() {
+				fetchDiff := f.fetching[hashes[0]].fetchDiffs
+
+				gopool.Submit(func() {
 					if f.fetchingHook != nil {
 						f.fetchingHook(hashes)
+					}
+					if fetchDiff != nil {
+						fetchDiff(hashes)
 					}
 					for _, hash := range hashes {
 						headerFetchMeter.Mark(1)
 						fetchHeader(hash) // Suboptimal, but protocol doesn't allow batch header retrievals
 					}
-				}()
+				})
 			}
 			// Schedule the next fetch if blocks are still pending
 			f.rescheduleFetch(fetchTimer)
@@ -750,7 +782,9 @@ func (f *BlockFetcher) enqueue(peer string, header *types.Header, block *types.B
 // importHeaders spawns a new goroutine to run a header insertion into the chain.
 // If the header's number is at the same height as the current import phase, it
 // updates the phase states accordingly.
-func (f *BlockFetcher) importHeaders(peer string, header *types.Header) {
+func (f *BlockFetcher) importHeaders(op *blockOrHeaderInject) {
+	peer := op.origin
+	header := op.header
 	hash := header.Hash()
 	log.Debug("Importing propagated header", "peer", peer, "number", header.Number, "hash", hash)
 
@@ -760,6 +794,8 @@ func (f *BlockFetcher) importHeaders(peer string, header *types.Header) {
 		parent := f.getHeader(header.ParentHash)
 		if parent == nil {
 			log.Debug("Unknown parent of propagated header", "peer", peer, "number", header.Number, "hash", hash, "parent", header.ParentHash)
+			time.Sleep(reQueueBlockTimeout)
+			f.requeue <- op
 			return
 		}
 		// Validate the header and if something went wrong, drop the peer
@@ -783,7 +819,9 @@ func (f *BlockFetcher) importHeaders(peer string, header *types.Header) {
 // importBlocks spawns a new goroutine to run a block insertion into the chain. If the
 // block's number is at the same height as the current import phase, it updates
 // the phase states accordingly.
-func (f *BlockFetcher) importBlocks(peer string, block *types.Block) {
+func (f *BlockFetcher) importBlocks(op *blockOrHeaderInject) {
+	peer := op.origin
+	block := op.block
 	hash := block.Hash()
 
 	// Run the import on a new thread
@@ -795,6 +833,8 @@ func (f *BlockFetcher) importBlocks(peer string, block *types.Block) {
 		parent := f.getBlock(block.ParentHash())
 		if parent == nil {
 			log.Debug("Unknown parent of propagated block", "peer", peer, "number", block.Number(), "hash", hash, "parent", block.ParentHash())
+			time.Sleep(reQueueBlockTimeout)
+			f.requeue <- op
 			return
 		}
 		// Quickly validate the header and propagate the block if it passes
@@ -805,11 +845,12 @@ func (f *BlockFetcher) importBlocks(peer string, block *types.Block) {
 			go f.broadcastBlock(block, true)
 
 		case consensus.ErrFutureBlock:
-			// Weird future block, don't fail, but neither propagate
+			log.Error("Received future block", "peer", peer, "number", block.Number(), "hash", hash, "err", err)
+			f.dropPeer(peer)
 
 		default:
 			// Something went very wrong, drop the peer
-			log.Debug("Propagated block verification failed", "peer", peer, "number", block.Number(), "hash", hash, "err", err)
+			log.Error("Propagated block verification failed", "peer", peer, "number", block.Number(), "hash", hash, "err", err)
 			f.dropPeer(peer)
 			return
 		}
@@ -833,17 +874,15 @@ func (f *BlockFetcher) importBlocks(peer string, block *types.Block) {
 // internal state.
 func (f *BlockFetcher) forgetHash(hash common.Hash) {
 	// Remove all pending announces and decrement DOS counters
-	if announceMap, ok := f.announced[hash]; ok {
-		for _, announce := range announceMap {
-			f.announces[announce.origin]--
-			if f.announces[announce.origin] <= 0 {
-				delete(f.announces, announce.origin)
-			}
+	for _, announce := range f.announced[hash] {
+		f.announces[announce.origin]--
+		if f.announces[announce.origin] <= 0 {
+			delete(f.announces, announce.origin)
 		}
-		delete(f.announced, hash)
-		if f.announceChangeHook != nil {
-			f.announceChangeHook(hash, false)
-		}
+	}
+	delete(f.announced, hash)
+	if f.announceChangeHook != nil {
+		f.announceChangeHook(hash, false)
 	}
 	// Remove any pending fetches and decrement the DOS counters
 	if announce := f.fetching[hash]; announce != nil {

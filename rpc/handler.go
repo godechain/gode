@@ -25,6 +25,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/gopool"
+
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -93,7 +95,7 @@ func newHandler(connCtx context.Context, conn jsonWriter, idgen func() ID, reg *
 }
 
 // handleBatch executes all messages in a batch and returns the responses.
-func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
+func (h *handler) handleBatch(ctx context.Context, msgs []*jsonrpcMessage) {
 	// Emit error response for empty batches:
 	if len(msgs) == 0 {
 		h.startCallProc(func(cp *callProc) {
@@ -116,7 +118,7 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 	h.startCallProc(func(cp *callProc) {
 		answers := make([]*jsonrpcMessage, 0, len(msgs))
 		for _, msg := range calls {
-			if answer := h.handleCallMsg(cp, msg); answer != nil {
+			if answer := h.handleCallMsg(cp, ctx, msg); answer != nil {
 				answers = append(answers, answer)
 			}
 		}
@@ -131,12 +133,12 @@ func (h *handler) handleBatch(msgs []*jsonrpcMessage) {
 }
 
 // handleMsg handles a single message.
-func (h *handler) handleMsg(msg *jsonrpcMessage) {
+func (h *handler) handleMsg(ctx context.Context, msg *jsonrpcMessage) {
 	if ok := h.handleImmediate(msg); ok {
 		return
 	}
 	h.startCallProc(func(cp *callProc) {
-		answer := h.handleCallMsg(cp, msg)
+		answer := h.handleCallMsg(cp, ctx, msg)
 		h.addSubscriptions(cp.notifiers)
 		if answer != nil {
 			h.conn.writeJSON(cp.ctx, answer)
@@ -219,12 +221,12 @@ func (h *handler) cancelServerSubscriptions(err error) {
 // startCallProc runs fn in a new goroutine and starts tracking it in the h.calls wait group.
 func (h *handler) startCallProc(fn func(*callProc)) {
 	h.callWG.Add(1)
-	go func() {
+	gopool.Submit(func() {
 		ctx, cancel := context.WithCancel(h.rootCtx)
 		defer h.callWG.Done()
 		defer cancel()
 		fn(&callProc{ctx: ctx})
-	}()
+	})
 }
 
 // handleImmediate executes non-call messages. It returns false if the message is a
@@ -287,7 +289,7 @@ func (h *handler) handleResponse(msg *jsonrpcMessage) {
 }
 
 // handleCallMsg executes a call message and returns the answer.
-func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMessage {
+func (h *handler) handleCallMsg(ctx *callProc, reqCtx context.Context, msg *jsonrpcMessage) *jsonrpcMessage {
 	start := time.Now()
 	switch {
 	case msg.isNotification():
@@ -299,6 +301,9 @@ func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMess
 		var ctx []interface{}
 		ctx = append(ctx, "reqid", idForLog{msg.ID}, "t", time.Since(start))
 		if resp.Error != nil {
+			xForward := reqCtx.Value("X-Forwarded-For")
+			h.log.Warn("Served "+msg.Method, "reqid", idForLog{msg.ID}, "t", time.Since(start), "err", resp.Error.Message, "X-Forwarded-For", xForward)
+
 			ctx = append(ctx, "err", resp.Error.Message)
 			if resp.Error.Data != nil {
 				ctx = append(ctx, "errdata", resp.Error.Data)
@@ -345,7 +350,8 @@ func (h *handler) handleCall(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage 
 		} else {
 			successfulRequestGauge.Inc(1)
 		}
-		rpcServingTimer.UpdateSince(start)
+		RpcServingTimer.UpdateSince(start)
+		newRPCRequestGauge(msg.Method).Inc(1)
 		newRPCServingTimer(msg.Method, answer.Error == nil).UpdateSince(start)
 	}
 	return answer

@@ -27,11 +27,11 @@ import (
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rpc"
 )
 
@@ -49,28 +49,26 @@ type filter struct {
 // PublicFilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
 // information related to the Ethereum protocol such als blocks, transactions and logs.
 type PublicFilterAPI struct {
-	backend   Backend
-	mux       *event.TypeMux
-	quit      chan struct{}
-	chainDb   ethdb.Database
-	events    *EventSystem
-	filtersMu sync.Mutex
-	filters   map[rpc.ID]*filter
-	timeout   time.Duration
-	borLogs   bool
-
-	chainConfig *params.ChainConfig
+	backend    Backend
+	mux        *event.TypeMux
+	quit       chan struct{}
+	chainDb    ethdb.Database
+	events     *EventSystem
+	filtersMu  sync.Mutex
+	filters    map[rpc.ID]*filter
+	timeout    time.Duration
+	rangeLimit bool
 }
 
 // NewPublicFilterAPI returns a new PublicFilterAPI instance.
-func NewPublicFilterAPI(backend Backend, lightMode bool, timeout time.Duration, borLogs bool) *PublicFilterAPI {
+func NewPublicFilterAPI(backend Backend, lightMode bool, timeout time.Duration, rangeLimit bool) *PublicFilterAPI {
 	api := &PublicFilterAPI{
-		backend: backend,
-		chainDb: backend.ChainDb(),
-		events:  NewEventSystem(backend, lightMode),
-		filters: make(map[rpc.ID]*filter),
-		timeout: timeout,
-		borLogs: borLogs,
+		backend:    backend,
+		chainDb:    backend.ChainDb(),
+		events:     NewEventSystem(backend, lightMode),
+		filters:    make(map[rpc.ID]*filter),
+		timeout:    timeout,
+		rangeLimit: rangeLimit,
 	}
 	go api.timeoutLoop(timeout)
 
@@ -119,12 +117,11 @@ func (api *PublicFilterAPI) NewPendingTransactionFilter() rpc.ID {
 		pendingTxs   = make(chan []common.Hash)
 		pendingTxSub = api.events.SubscribePendingTxs(pendingTxs)
 	)
-
 	api.filtersMu.Lock()
 	api.filters[pendingTxSub.ID] = &filter{typ: PendingTransactionsSubscription, deadline: time.NewTimer(api.timeout), hashes: make([]common.Hash, 0), s: pendingTxSub}
 	api.filtersMu.Unlock()
 
-	go func() {
+	gopool.Submit(func() {
 		for {
 			select {
 			case ph := <-pendingTxs:
@@ -140,7 +137,7 @@ func (api *PublicFilterAPI) NewPendingTransactionFilter() rpc.ID {
 				return
 			}
 		}
-	}()
+	})
 
 	return pendingTxSub.ID
 }
@@ -155,7 +152,7 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 
 	rpcSub := notifier.CreateSubscription()
 
-	go func() {
+	gopool.Submit(func() {
 		txHashes := make(chan []common.Hash, 128)
 		pendingTxSub := api.events.SubscribePendingTxs(txHashes)
 
@@ -175,7 +172,7 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 				return
 			}
 		}
-	}()
+	})
 
 	return rpcSub, nil
 }
@@ -194,7 +191,7 @@ func (api *PublicFilterAPI) NewBlockFilter() rpc.ID {
 	api.filters[headerSub.ID] = &filter{typ: BlocksSubscription, deadline: time.NewTimer(api.timeout), hashes: make([]common.Hash, 0), s: headerSub}
 	api.filtersMu.Unlock()
 
-	go func() {
+	gopool.Submit(func() {
 		for {
 			select {
 			case h := <-headers:
@@ -210,7 +207,7 @@ func (api *PublicFilterAPI) NewBlockFilter() rpc.ID {
 				return
 			}
 		}
-	}()
+	})
 
 	return headerSub.ID
 }
@@ -224,7 +221,7 @@ func (api *PublicFilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, er
 
 	rpcSub := notifier.CreateSubscription()
 
-	go func() {
+	gopool.Submit(func() {
 		headers := make(chan *types.Header)
 		headersSub := api.events.SubscribeNewHeads(headers)
 
@@ -240,7 +237,7 @@ func (api *PublicFilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, er
 				return
 			}
 		}
-	}()
+	})
 
 	return rpcSub, nil
 }
@@ -262,7 +259,7 @@ func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc
 		return nil, err
 	}
 
-	go func() {
+	gopool.Submit(func() {
 
 		for {
 			select {
@@ -278,7 +275,7 @@ func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc
 				return
 			}
 		}
-	}()
+	})
 
 	return rpcSub, nil
 }
@@ -311,7 +308,7 @@ func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
 	api.filters[logsSub.ID] = &filter{typ: LogsSubscription, crit: crit, deadline: time.NewTimer(api.timeout), logs: make([]*types.Log, 0), s: logsSub}
 	api.filtersMu.Unlock()
 
-	go func() {
+	gopool.Submit(func() {
 		for {
 			select {
 			case l := <-logs:
@@ -327,7 +324,7 @@ func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
 				return
 			}
 		}
-	}()
+	})
 
 	return logsSub.ID, nil
 }
@@ -336,22 +333,10 @@ func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
 //
 // https://eth.wiki/json-rpc/API#eth_getlogs
 func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]*types.Log, error) {
-	if api.chainConfig == nil {
-		return nil, errors.New("No chain config found. Proper PublicFilterAPI initialization required")
-	}
-
-	// get sprint from bor config
-	sprint := api.chainConfig.Bor.Sprint
-
 	var filter *Filter
-	var borLogsFilter *BorBlockLogsFilter
 	if crit.BlockHash != nil {
 		// Block filter requested, construct a single-shot filter
 		filter = NewBlockFilter(api.backend, *crit.BlockHash, crit.Addresses, crit.Topics)
-		// Block bor filter
-		if api.borLogs {
-			borLogsFilter = NewBorBlockLogsFilter(api.backend, sprint, *crit.BlockHash, crit.Addresses, crit.Topics)
-		}
 	} else {
 		// Convert the RPC block numbers into internal representations
 		begin := rpc.LatestBlockNumber.Int64()
@@ -363,30 +348,13 @@ func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([
 			end = crit.ToBlock.Int64()
 		}
 		// Construct the range filter
-		filter = NewRangeFilter(api.backend, begin, end, crit.Addresses, crit.Topics)
-		// Block bor filter
-		if api.borLogs {
-			borLogsFilter = NewBorBlockLogsRangeFilter(api.backend, sprint, begin, end, crit.Addresses, crit.Topics)
-		}
+		filter = NewRangeFilter(api.backend, begin, end, crit.Addresses, crit.Topics, api.rangeLimit)
 	}
-
 	// Run the filter and return all the logs
 	logs, err := filter.Logs(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	if borLogsFilter != nil {
-		// Run the filter and return all the logs
-		borBlockLogs, err := borLogsFilter.Logs(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		return returnLogs(types.MergeBorLogs(logs, borBlockLogs)), err
-	}
-
-	// merge bor block logs and receipt logs and return it
 	return returnLogs(logs), err
 }
 
@@ -435,7 +403,7 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*ty
 			end = f.crit.ToBlock.Int64()
 		}
 		// Construct the range filter
-		filter = NewRangeFilter(api.backend, begin, end, f.crit.Addresses, f.crit.Topics)
+		filter = NewRangeFilter(api.backend, begin, end, f.crit.Addresses, f.crit.Topics, api.rangeLimit)
 	}
 	// Run the filter and return all the logs
 	logs, err := filter.Logs(ctx)

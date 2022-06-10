@@ -30,7 +30,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/les/downloader"
+	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/light"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/params"
@@ -316,7 +316,7 @@ func TestGetStaleCodeLes4(t *testing.T) { testGetStaleCode(t, 4) }
 
 func testGetStaleCode(t *testing.T, protocol int) {
 	netconfig := testnetConfig{
-		blocks:    core.TriesInMemory + 4,
+		blocks:    128 + 4,
 		protocol:  protocol,
 		nopruning: true,
 	}
@@ -370,7 +370,7 @@ func testGetReceipt(t *testing.T, protocol int) {
 		block := bc.GetBlockByNumber(i)
 
 		hashes = append(hashes, block.Hash())
-		receipts = append(receipts, rawdb.ReadReceipts(server.db, block.Hash(), block.NumberU64(), bc.Config()))
+		receipts = append(receipts, rawdb.ReadRawReceipts(server.db, block.Hash(), block.NumberU64()))
 	}
 	// Send the hash request and verify the response
 	sendRequest(rawPeer.app, GetReceiptsMsg, 42, hashes)
@@ -430,7 +430,7 @@ func TestGetStaleProofLes4(t *testing.T) { testGetStaleProof(t, 4) }
 
 func testGetStaleProof(t *testing.T, protocol int) {
 	netconfig := testnetConfig{
-		blocks:    core.TriesInMemory + 4,
+		blocks:    128 + 4,
 		protocol:  protocol,
 		nopruning: true,
 	}

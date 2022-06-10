@@ -39,22 +39,6 @@ func TestDefaultGenesisBlock(t *testing.T) {
 	if block.Hash() != params.RopstenGenesisHash {
 		t.Errorf("wrong ropsten genesis hash, got %v, want %v", block.Hash(), params.RopstenGenesisHash)
 	}
-	block = DefaultRinkebyGenesisBlock().ToBlock(nil)
-	if block.Hash() != params.RinkebyGenesisHash {
-		t.Errorf("wrong rinkeby genesis hash, got %v, want %v", block.Hash(), params.RinkebyGenesisHash)
-	}
-	block = DefaultGoerliGenesisBlock().ToBlock(nil)
-	if block.Hash() != params.GoerliGenesisHash {
-		t.Errorf("wrong goerli genesis hash, got %v, want %v", block.Hash(), params.GoerliGenesisHash)
-	}
-}
-
-func TestInvalidCliqueConfig(t *testing.T) {
-	block := DefaultGoerliGenesisBlock()
-	block.ExtraData = []byte{}
-	if _, err := block.Commit(nil); err == nil {
-		t.Fatal("Expected error on invalid clique config")
-	}
 }
 
 func TestSetupGenesis(t *testing.T) {
@@ -87,15 +71,6 @@ func TestSetupGenesis(t *testing.T) {
 		{
 			name: "no block in DB, genesis == nil",
 			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				return SetupGenesisBlock(db, nil)
-			},
-			wantHash:   params.MainnetGenesisHash,
-			wantConfig: params.MainnetChainConfig,
-		},
-		{
-			name: "mainnet block in DB, genesis == nil",
-			fn: func(db ethdb.Database) (*params.ChainConfig, common.Hash, error) {
-				DefaultGenesisBlock().MustCommit(db)
 				return SetupGenesisBlock(db, nil)
 			},
 			wantHash:   params.MainnetGenesisHash,
@@ -200,6 +175,10 @@ func TestGenesisHashes(t *testing.T) {
 		{
 			genesis: DefaultRinkebyGenesisBlock(),
 			hash:    params.RinkebyGenesisHash,
+		},
+		{
+			genesis: DefaultYoloV3GenesisBlock(),
+			hash:    params.YoloV3GenesisHash,
 		},
 	}
 	for i, c := range cases {

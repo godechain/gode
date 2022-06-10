@@ -20,9 +20,10 @@ import (
 	"fmt"
 	"strings"
 
+	"gopkg.in/urfave/cli.v1"
+
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/tests"
-	"gopkg.in/urfave/cli.v1"
 )
 
 var (
@@ -79,10 +80,8 @@ var (
 		Value: "env.json",
 	}
 	InputTxsFlag = cli.StringFlag{
-		Name: "input.txs",
-		Usage: "`stdin` or file name of where to find the transactions to apply. " +
-			"If the file prefix is '.rlp', then the data is interpreted as an RLP list of signed transactions." +
-			"The '.rlp' format is identical to the output.body format.",
+		Name:  "input.txs",
+		Usage: "`stdin` or file name of where to find the transactions to apply.",
 		Value: "txs.json",
 	}
 	RewardFlag = cli.Int64Flag{

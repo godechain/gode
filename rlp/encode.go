@@ -432,20 +432,7 @@ func makeByteArrayWriter(typ reflect.Type) writer {
 	case 1:
 		return writeLengthOneByteArray
 	default:
-		length := typ.Len()
-		return func(val reflect.Value, w *encbuf) error {
-			if !val.CanAddr() {
-				// Getting the byte slice of val requires it to be addressable. Make it
-				// addressable by copying.
-				copy := reflect.New(val.Type()).Elem()
-				copy.Set(val)
-				val = copy
-			}
-			slice := byteArrayBytes(val, length)
-			w.encodeStringHeader(len(slice))
-			w.str = append(w.str, slice...)
-			return nil
-		}
+		return writeByteArray
 	}
 }
 
@@ -461,6 +448,21 @@ func writeLengthOneByteArray(val reflect.Value, w *encbuf) error {
 	} else {
 		w.str = append(w.str, 0x81, b)
 	}
+	return nil
+}
+
+func writeByteArray(val reflect.Value, w *encbuf) error {
+	if !val.CanAddr() {
+		// Getting the byte slice of val requires it to be addressable. Make it
+		// addressable by copying.
+		copy := reflect.New(val.Type()).Elem()
+		copy.Set(val)
+		val = copy
+	}
+
+	slice := byteArrayBytes(val)
+	w.encodeStringHeader(len(slice))
+	w.str = append(w.str, slice...)
 	return nil
 }
 
@@ -497,39 +499,19 @@ func makeSliceWriter(typ reflect.Type, ts tags) (writer, error) {
 	if etypeinfo.writerErr != nil {
 		return nil, etypeinfo.writerErr
 	}
-
-	var wfn writer
-	if ts.tail {
-		// This is for struct tail slices.
-		// w.list is not called for them.
-		wfn = func(val reflect.Value, w *encbuf) error {
-			vlen := val.Len()
-			for i := 0; i < vlen; i++ {
-				if err := etypeinfo.writer(val.Index(i), w); err != nil {
-					return err
-				}
-			}
-			return nil
+	writer := func(val reflect.Value, w *encbuf) error {
+		if !ts.tail {
+			defer w.listEnd(w.list())
 		}
-	} else {
-		// This is for regular slices and arrays.
-		wfn = func(val reflect.Value, w *encbuf) error {
-			vlen := val.Len()
-			if vlen == 0 {
-				w.str = append(w.str, 0xC0)
-				return nil
+		vlen := val.Len()
+		for i := 0; i < vlen; i++ {
+			if err := etypeinfo.writer(val.Index(i), w); err != nil {
+				return err
 			}
-			listOffset := w.list()
-			for i := 0; i < vlen; i++ {
-				if err := etypeinfo.writer(val.Index(i), w); err != nil {
-					return err
-				}
-			}
-			w.listEnd(listOffset)
-			return nil
 		}
+		return nil
 	}
-	return wfn, nil
+	return writer, nil
 }
 
 func makeStructWriter(typ reflect.Type) (writer, error) {
@@ -542,61 +524,17 @@ func makeStructWriter(typ reflect.Type) (writer, error) {
 			return nil, structFieldError{typ, f.index, f.info.writerErr}
 		}
 	}
-
-	var writer writer
-	firstOptionalField := firstOptionalField(fields)
-	if firstOptionalField == len(fields) {
-		// This is the writer function for structs without any optional fields.
-		writer = func(val reflect.Value, w *encbuf) error {
-			lh := w.list()
-			for _, f := range fields {
-				if err := f.info.writer(val.Field(f.index), w); err != nil {
-					return err
-				}
+	writer := func(val reflect.Value, w *encbuf) error {
+		lh := w.list()
+		for _, f := range fields {
+			if err := f.info.writer(val.Field(f.index), w); err != nil {
+				return err
 			}
-			w.listEnd(lh)
-			return nil
 		}
-	} else {
-		// If there are any "optional" fields, the writer needs to perform additional
-		// checks to determine the output list length.
-		writer = func(val reflect.Value, w *encbuf) error {
-			lastField := len(fields) - 1
-			for ; lastField >= firstOptionalField; lastField-- {
-				if !val.Field(fields[lastField].index).IsZero() {
-					break
-				}
-			}
-			lh := w.list()
-			for i := 0; i <= lastField; i++ {
-				if err := fields[i].info.writer(val.Field(fields[i].index), w); err != nil {
-					return err
-				}
-			}
-			w.listEnd(lh)
-			return nil
-		}
+		w.listEnd(lh)
+		return nil
 	}
 	return writer, nil
-}
-
-// nilEncoding returns the encoded value of a nil pointer.
-func nilEncoding(typ reflect.Type, ts tags) uint8 {
-	var nilKind Kind
-	if ts.nilOK {
-		nilKind = ts.nilKind // use struct tag if provided
-	} else {
-		nilKind = defaultNilKind(typ.Elem())
-	}
-
-	switch nilKind {
-	case String:
-		return 0x80
-	case List:
-		return 0xC0
-	default:
-		panic(fmt.Errorf("rlp: invalid nil kind %d", nilKind))
-	}
 }
 
 func makePtrWriter(typ reflect.Type, ts tags) (writer, error) {
@@ -604,14 +542,24 @@ func makePtrWriter(typ reflect.Type, ts tags) (writer, error) {
 	if etypeinfo.writerErr != nil {
 		return nil, etypeinfo.writerErr
 	}
-	nilEncoding := nilEncoding(typ, ts)
+	// Determine how to encode nil pointers.
+	var nilKind Kind
+	if ts.nilOK {
+		nilKind = ts.nilKind // use struct tag if provided
+	} else {
+		nilKind = defaultNilKind(typ.Elem())
+	}
 
 	writer := func(val reflect.Value, w *encbuf) error {
-		if ev := val.Elem(); ev.IsValid() {
-			return etypeinfo.writer(ev, w)
+		if val.IsNil() {
+			if nilKind == String {
+				w.str = append(w.str, 0x80)
+			} else {
+				w.listEnd(w.list())
+			}
+			return nil
 		}
-		w.str = append(w.str, nilEncoding)
-		return nil
+		return etypeinfo.writer(val.Elem(), w)
 	}
 	return writer, nil
 }

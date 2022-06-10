@@ -39,12 +39,16 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/node"
+
+	// Force-load the tracer engines to trigger registration
+	_ "github.com/ethereum/go-ethereum/eth/tracers/js"
+	_ "github.com/ethereum/go-ethereum/eth/tracers/native"
+
 	"gopkg.in/urfave/cli.v1"
 )
 
 const (
-	clientIdentifier     = "bor" // Client identifier to advertise over the network
-	repositoryIdentifier = "go-bor"
+	clientIdentifier = "geth" // Client identifier to advertise over the network
 )
 
 var (
@@ -52,10 +56,10 @@ var (
 	gitCommit = ""
 	gitDate   = ""
 	// The app that holds all commands and flags.
-	app = flags.NewApp(gitCommit, gitDate, fmt.Sprintf("the %s command line interface", repositoryIdentifier))
+	app = flags.NewApp(gitCommit, gitDate, "the go-ethereum command line interface")
 	// flags that configure the node
 	nodeFlags = []cli.Flag{
-		utils.BorLogsFlag,
+		utils.GenesisFlag,
 		utils.IdentityFlag,
 		utils.UnlockedAccountFlag,
 		utils.PasswordFileFlag,
@@ -66,17 +70,14 @@ var (
 		utils.KeyStoreDirFlag,
 		utils.ExternalSignerFlag,
 		utils.NoUSBFlag,
+		utils.DirectBroadcastFlag,
+		utils.DisableSnapProtocolFlag,
+		utils.DiffSyncFlag,
+		utils.PipeCommitFlag,
+		utils.RangeLimitFlag,
 		utils.USBFlag,
 		utils.SmartCardDaemonPathFlag,
-		utils.OverrideLondonFlag,
-		utils.EthashCacheDirFlag,
-		utils.EthashCachesInMemoryFlag,
-		utils.EthashCachesOnDiskFlag,
-		utils.EthashCachesLockMmapFlag,
-		utils.EthashDatasetDirFlag,
-		utils.EthashDatasetsInMemoryFlag,
-		utils.EthashDatasetsOnDiskFlag,
-		utils.EthashDatasetsLockMmapFlag,
+		utils.OverrideBerlinFlag,
 		utils.TxPoolLocalsFlag,
 		utils.TxPoolNoLocalsFlag,
 		utils.TxPoolJournalFlag,
@@ -88,6 +89,8 @@ var (
 		utils.TxPoolAccountQueueFlag,
 		utils.TxPoolGlobalQueueFlag,
 		utils.TxPoolLifetimeFlag,
+		utils.TxPoolReannounceTimeFlag,
+		utils.TxPoolGasFreeContracts,
 		utils.SyncModeFlag,
 		utils.ExitWhenSyncedFlag,
 		utils.GCModeFlag,
@@ -105,6 +108,7 @@ var (
 		utils.LightNoSyncServeFlag,
 		utils.WhitelistFlag,
 		utils.BloomFilterSizeFlag,
+		utils.TriesInMemoryFlag,
 		utils.CacheFlag,
 		utils.CacheDatabaseFlag,
 		utils.CacheTrieFlag,
@@ -112,21 +116,23 @@ var (
 		utils.CacheTrieRejournalFlag,
 		utils.CacheGCFlag,
 		utils.CacheSnapshotFlag,
-		utils.CacheNoPrefetchFlag,
 		utils.CachePreimagesFlag,
+		utils.PersistDiffFlag,
+		utils.DiffBlockFlag,
 		utils.ListenPortFlag,
 		utils.MaxPeersFlag,
 		utils.MaxPendingPeersFlag,
 		utils.MiningEnabledFlag,
 		utils.MinerThreadsFlag,
 		utils.MinerNotifyFlag,
-		utils.LegacyMinerGasTargetFlag,
+		utils.MinerGasTargetFlag,
 		utils.MinerGasLimitFlag,
 		utils.MinerGasPriceFlag,
 		utils.MinerEtherbaseFlag,
 		utils.MinerExtraDataFlag,
 		utils.MinerRecommitIntervalFlag,
-		utils.MinerNoVerifyFlag,
+		utils.MinerDelayLeftoverFlag,
+		utils.MinerNoVerfiyFlag,
 		utils.NATFlag,
 		utils.NoDiscoverFlag,
 		utils.DiscoveryV5Flag,
@@ -134,14 +140,8 @@ var (
 		utils.NodeKeyFileFlag,
 		utils.NodeKeyHexFlag,
 		utils.DNSDiscoveryFlag,
-		utils.MainnetFlag,
 		utils.DeveloperFlag,
 		utils.DeveloperPeriodFlag,
-		utils.RopstenFlag,
-		utils.RinkebyFlag,
-		utils.GoerliFlag,
-		utils.MumbaiFlag,
-		utils.BorMainnetFlag,
 		utils.VMEnableDebugFlag,
 		utils.NetworkIdFlag,
 		utils.EthStatsURLFlag,
@@ -150,10 +150,13 @@ var (
 		utils.GpoBlocksFlag,
 		utils.GpoPercentileFlag,
 		utils.GpoMaxGasPriceFlag,
-		utils.GpoIgnoreGasPriceFlag,
+		utils.EWASMInterpreterFlag,
+		utils.EVMInterpreterFlag,
 		utils.MinerNotifyFullFlag,
 		configFileFlag,
 		utils.CatalystFlag,
+		utils.BlockAmountReserved,
+		utils.CheckSnapshotWithMPT,
 	}
 
 	rpcFlags = []cli.Flag{
@@ -162,6 +165,12 @@ var (
 		utils.HTTPPortFlag,
 		utils.HTTPCORSDomainFlag,
 		utils.HTTPVirtualHostsFlag,
+		utils.LegacyRPCEnabledFlag,
+		utils.LegacyRPCListenAddrFlag,
+		utils.LegacyRPCPortFlag,
+		utils.LegacyRPCCORSDomainFlag,
+		utils.LegacyRPCVirtualHostsFlag,
+		utils.LegacyRPCApiFlag,
 		utils.GraphQLEnabledFlag,
 		utils.GraphQLCORSDomainFlag,
 		utils.GraphQLVirtualHostsFlag,
@@ -177,7 +186,6 @@ var (
 		utils.IPCPathFlag,
 		utils.InsecureUnlockAllowedFlag,
 		utils.RPCGlobalGasCapFlag,
-		utils.RPCGlobalEVMTimeoutFlag,
 		utils.RPCGlobalTxFeeCapFlag,
 		utils.AllowUnprotectedTxs,
 	}
@@ -193,10 +201,6 @@ var (
 		utils.MetricsInfluxDBUsernameFlag,
 		utils.MetricsInfluxDBPasswordFlag,
 		utils.MetricsInfluxDBTagsFlag,
-		utils.MetricsEnableInfluxDBV2Flag,
-		utils.MetricsInfluxDBTokenFlag,
-		utils.MetricsInfluxDBBucketFlag,
-		utils.MetricsInfluxDBOrganizationFlag,
 	}
 )
 
@@ -204,17 +208,17 @@ func init() {
 	// Initialize the CLI app and start Geth
 	app.Action = geth
 	app.HideVersion = true // we have a command to print the version
-	app.Copyright = "Copyright 2013-2021 The go-ethereum Authors"
+	app.Copyright = "Copyright 2013-2020 The go-ethereum Authors and BSC Authors"
 	app.Commands = []cli.Command{
 		// See chaincmd.go:
 		initCommand,
+		initNetworkCommand,
 		importCommand,
 		exportCommand,
 		importPreimagesCommand,
 		exportPreimagesCommand,
 		removedbCommand,
 		dumpCommand,
-		dumpGenesisCommand,
 		// See accountcmd.go:
 		accountCommand,
 		walletCommand,
@@ -223,8 +227,6 @@ func init() {
 		attachCommand,
 		javascriptCommand,
 		// See misccmd.go:
-		makecacheCommand,
-		makedagCommand,
 		versionCommand,
 		versionCheckCommand,
 		licenseCommand,
@@ -245,22 +247,19 @@ func init() {
 	app.Flags = append(app.Flags, debug.Flags...)
 	app.Flags = append(app.Flags, metricsFlags...)
 
-	// add bor flags
-	app.Flags = append(app.Flags, utils.BorFlags...)
-
 	app.Before = func(ctx *cli.Context) error {
 		return debug.Setup(ctx)
 	}
 	app.After = func(ctx *cli.Context) error {
 		debug.Exit()
-		prompt.Stdin.Close() // Resets terminal mode.
+		_ = prompt.Stdin.Close() // Resets terminal mode.
 		return nil
 	}
 }
 
 func main() {
 	if err := app.Run(os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
@@ -270,21 +269,6 @@ func main() {
 func prepare(ctx *cli.Context) {
 	// If we're running a known preset, log it for convenience.
 	switch {
-	case ctx.GlobalIsSet(utils.RopstenFlag.Name):
-		log.Info("Starting Geth on Ropsten testnet...")
-
-	case ctx.GlobalIsSet(utils.RinkebyFlag.Name):
-		log.Info("Starting Geth on Rinkeby testnet...")
-
-	case ctx.GlobalIsSet(utils.GoerliFlag.Name):
-		log.Info("Starting Geth on Görli testnet...")
-
-	case ctx.GlobalIsSet(utils.MumbaiFlag.Name):
-		log.Info("Starting Bor on Mumbai testnet...")
-
-	case ctx.GlobalIsSet(utils.BorMainnetFlag.Name):
-		log.Info("Starting Bor on Bor mainnet...")
-
 	case ctx.GlobalIsSet(utils.DeveloperFlag.Name):
 		log.Info("Starting Geth in ephemeral dev mode...")
 
@@ -294,16 +278,16 @@ func prepare(ctx *cli.Context) {
 	// If we're a full node on mainnet without --cache specified, bump default cache allowance
 	if ctx.GlobalString(utils.SyncModeFlag.Name) != "light" && !ctx.GlobalIsSet(utils.CacheFlag.Name) && !ctx.GlobalIsSet(utils.NetworkIdFlag.Name) {
 		// Make sure we're not on any supported preconfigured testnet either
-		if !ctx.GlobalIsSet(utils.RopstenFlag.Name) && !ctx.GlobalIsSet(utils.RinkebyFlag.Name) && !ctx.GlobalIsSet(utils.GoerliFlag.Name) && !ctx.GlobalIsSet(utils.MumbaiFlag.Name) && !ctx.GlobalIsSet(utils.DeveloperFlag.Name) {
+		if !ctx.GlobalIsSet(utils.DeveloperFlag.Name) {
 			// Nope, we're really on mainnet. Bump that cache up!
 			log.Info("Bumping default cache on mainnet", "provided", ctx.GlobalInt(utils.CacheFlag.Name), "updated", 4096)
-			ctx.GlobalSet(utils.CacheFlag.Name, strconv.Itoa(4096))
+			_ = ctx.GlobalSet(utils.CacheFlag.Name, strconv.Itoa(4096))
 		}
 	}
 	// If we're running a light client on any network, drop the cache to some meaningfully low amount
 	if ctx.GlobalString(utils.SyncModeFlag.Name) == "light" && !ctx.GlobalIsSet(utils.CacheFlag.Name) {
 		log.Info("Dropping default light client cache", "provided", ctx.GlobalInt(utils.CacheFlag.Name), "updated", 128)
-		ctx.GlobalSet(utils.CacheFlag.Name, strconv.Itoa(128))
+		_ = ctx.GlobalSet(utils.CacheFlag.Name, strconv.Itoa(128))
 	}
 
 	// Start metrics export if enabled
@@ -323,6 +307,7 @@ func geth(ctx *cli.Context) error {
 
 	prepare(ctx)
 	stack, backend := makeFullNode(ctx)
+	//goland:noinspection GoUnhandledErrorResult
 	defer stack.Close()
 
 	startNode(ctx, stack, backend)
@@ -381,7 +366,7 @@ func startNode(ctx *cli.Context, stack *node.Node, backend ethapi.Backend) {
 
 			case accounts.WalletDropped:
 				log.Info("Old wallet dropped", "url", event.Wallet.URL())
-				event.Wallet.Close()
+				_ = event.Wallet.Close()
 			}
 		}
 	}()
@@ -404,7 +389,7 @@ func startNode(ctx *cli.Context, stack *node.Node, backend ethapi.Backend) {
 				if timestamp := time.Unix(int64(done.Latest.Time), 0); time.Since(timestamp) < 10*time.Minute {
 					log.Info("Synchronisation completed", "latestnum", done.Latest.Number, "latesthash", done.Latest.Hash(),
 						"age", common.PrettyAge(timestamp))
-					stack.Close()
+					_ = stack.Close()
 				}
 			}
 		}()
@@ -418,7 +403,7 @@ func startNode(ctx *cli.Context, stack *node.Node, backend ethapi.Backend) {
 		}
 		ethBackend, ok := backend.(*eth.EthAPIBackend)
 		if !ok {
-			utils.Fatalf("Ethereum service not running")
+			utils.Fatalf("Ethereum service not running: %v", err)
 		}
 		// Set the gas price to the limits from the CLI and start mining
 		gasprice := utils.GlobalBig(ctx, utils.MinerGasPriceFlag.Name)

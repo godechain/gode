@@ -33,17 +33,18 @@ type journalEntry interface {
 }
 
 // journal contains the list of state modifications applied since the last state
-// commit. These are tracked to be able to be reverted in the case of an execution
-// exception or request for reversal.
+// commit. These are tracked to be able to be reverted in case of an execution
+// exception or revertal request.
 type journal struct {
 	entries []journalEntry         // Current changes tracked by the journal
 	dirties map[common.Address]int // Dirty accounts and the number of changes
 }
 
-// newJournal creates a new initialized journal.
+// newJournal create a new initialized journal.
 func newJournal() *journal {
 	return &journal{
-		dirties: make(map[common.Address]int),
+		dirties: make(map[common.Address]int, defaultNumOfSlots),
+		entries: make([]journalEntry, 0, defaultNumOfSlots),
 	}
 }
 
@@ -90,7 +91,7 @@ type (
 		account *common.Address
 	}
 	resetObjectChange struct {
-		prev         *stateObject
+		prev         *StateObject
 		prevdestruct bool
 	}
 	suicideChange struct {
@@ -150,9 +151,9 @@ func (ch createObjectChange) dirtied() *common.Address {
 }
 
 func (ch resetObjectChange) revert(s *StateDB) {
-	s.setStateObject(ch.prev)
+	s.SetStateObject(ch.prev)
 	if !ch.prevdestruct && s.snap != nil {
-		delete(s.snapDestructs, ch.prev.addrHash)
+		delete(s.snapDestructs, ch.prev.address)
 	}
 }
 
@@ -253,7 +254,9 @@ func (ch accessListAddAccountChange) revert(s *StateDB) {
 		(addr) at this point, since no storage adds can remain when come upon
 		a single (addr) change.
 	*/
-	s.accessList.DeleteAddress(*ch.address)
+	if s.accessList != nil {
+		s.accessList.DeleteAddress(*ch.address)
+	}
 }
 
 func (ch accessListAddAccountChange) dirtied() *common.Address {
@@ -261,7 +264,9 @@ func (ch accessListAddAccountChange) dirtied() *common.Address {
 }
 
 func (ch accessListAddSlotChange) revert(s *StateDB) {
-	s.accessList.DeleteSlot(*ch.address, *ch.slot)
+	if s.accessList != nil {
+		s.accessList.DeleteSlot(*ch.address, *ch.slot)
+	}
 }
 
 func (ch accessListAddSlotChange) dirtied() *common.Address {

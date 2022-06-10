@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/prque"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
@@ -34,7 +35,7 @@ import (
 // injects into the database the block hash->number mappings.
 func InitDatabaseFromFreezer(db ethdb.Database) {
 	// If we can't access the freezer or it's empty, abort
-	frozen, err := db.Ancients()
+	frozen, err := db.ItemAmountInAncient()
 	if err != nil || frozen == 0 {
 		return
 	}
@@ -43,8 +44,9 @@ func InitDatabaseFromFreezer(db ethdb.Database) {
 		start  = time.Now()
 		logged = start.Add(-7 * time.Second) // Unindex during import is fast, don't double log
 		hash   common.Hash
+		offset = db.AncientOffSet()
 	)
-	for i := uint64(0); i < frozen; i++ {
+	for i := uint64(0) + offset; i < frozen+offset; i++ {
 		// Since the freezer has all data in sequential order on a file,
 		// it would be 'neat' to read more data in one go, and let the
 		// freezerdb return N items (e.g up to 1000 items per go)
@@ -159,7 +161,9 @@ func iterateTransactions(db ethdb.Database, from uint64, to uint64, reverse bool
 	}
 	go lookup() // start the sequential db accessor
 	for i := 0; i < int(threads); i++ {
-		go process()
+		gopool.Submit(func() {
+			process()
+		})
 	}
 	return hashesCh
 }

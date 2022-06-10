@@ -19,9 +19,11 @@ package eth
 import (
 	"errors"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -35,7 +37,17 @@ import (
 // are attempted to be reexecuted to generate the desired state. The optional
 // base layer statedb can be passed then it's regarded as the statedb of the
 // parent block.
-func (eth *Ethereum) stateAtBlock(block *types.Block, reexec uint64, base *state.StateDB, checkLive bool) (statedb *state.StateDB, err error) {
+// Parameters:
+// - block: The block for which we want the state (== state at the stateRoot of the parent)
+// - reexec: The maximum number of blocks to reprocess trying to obtain the desired state
+// - base: If the caller is tracing multiple blocks, the caller can provide the parent state
+//         continuously from the callsite.
+// - checklive: if true, then the live 'blockchain' state database is used. If the caller want to
+//        perform Commit or other 'save-to-disk' changes, this should be set to false to avoid
+//        storing trash persistently
+// - preferDisk: this arg can be used by the caller to signal that even though the 'base' is provided,
+//        it would be preferrable to start from a fresh state, if we have it on disk.
+func (eth *Ethereum) stateAtBlock(block *types.Block, reexec uint64, base *state.StateDB, checkLive bool, preferDisk bool) (statedb *state.StateDB, err error) {
 	var (
 		current  *types.Block
 		database state.Database
@@ -50,6 +62,15 @@ func (eth *Ethereum) stateAtBlock(block *types.Block, reexec uint64, base *state
 		}
 	}
 	if base != nil {
+		if preferDisk {
+			// Create an ephemeral trie.Database for isolating the live one. Otherwise
+			// the internal junks created by tracing will be persisted into the disk.
+			database = state.NewDatabaseWithConfig(eth.chainDb, &trie.Config{Cache: 16})
+			if statedb, err = state.New(block.Root(), database, nil); err == nil {
+				log.Info("Found disk backend for state trie", "root", block.Root(), "number", block.Number())
+				return statedb, nil
+			}
+		}
 		// The optional base statedb is given, mark the start point as parent block
 		statedb, database, report = base, base.Database(), false
 		current = eth.blockchain.GetBlock(block.ParentHash(), block.NumberU64()-1)
@@ -112,12 +133,14 @@ func (eth *Ethereum) stateAtBlock(block *types.Block, reexec uint64, base *state
 		if current = eth.blockchain.GetBlockByNumber(next); current == nil {
 			return nil, fmt.Errorf("block #%d not found", next)
 		}
-		_, _, _, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
+		statedb, _, _, _, err := eth.blockchain.Processor().Process(current, statedb, vm.Config{})
 		if err != nil {
 			return nil, fmt.Errorf("processing block %d failed: %v", current.NumberU64(), err)
 		}
 		// Finalize the state so any modifications are written to the trie
-		root, err := statedb.Commit(eth.blockchain.Config().IsEIP158(current.Number()))
+		statedb.Finalise(eth.blockchain.Config().IsEIP158(current.Number()))
+		statedb.AccountsIntermediateRoot()
+		root, _, err := statedb.Commit(nil)
 		if err != nil {
 			return nil, fmt.Errorf("stateAtBlock commit failed, number %d root %v: %w",
 				current.NumberU64(), current.Root().Hex(), err)
@@ -152,7 +175,7 @@ func (eth *Ethereum) stateAtTransaction(block *types.Block, txIndex int, reexec 
 	}
 	// Lookup the statedb of parent block from the live database,
 	// otherwise regenerate it on the flight.
-	statedb, err := eth.stateAtBlock(parent, reexec, nil, true)
+	statedb, err := eth.stateAtBlock(parent, reexec, nil, true, false)
 	if err != nil {
 		return nil, vm.BlockContext{}, nil, err
 	}
@@ -163,7 +186,7 @@ func (eth *Ethereum) stateAtTransaction(block *types.Block, txIndex int, reexec 
 	signer := types.MakeSigner(eth.blockchain.Config(), block.Number())
 	for idx, tx := range block.Transactions() {
 		// Assemble the transaction call message and return if the requested offset
-		msg, _ := tx.AsMessage(signer, block.BaseFee())
+		msg, _ := tx.AsMessage(signer)
 		txContext := core.NewEVMTxContext(msg)
 		context := core.NewEVMBlockContext(block.Header(), eth.blockchain, nil)
 		if idx == txIndex {
@@ -171,7 +194,15 @@ func (eth *Ethereum) stateAtTransaction(block *types.Block, txIndex int, reexec 
 		}
 		// Not yet the searched for transaction, execute on top of the current state
 		vmenv := vm.NewEVM(context, txContext, statedb, eth.blockchain.Config(), vm.Config{})
-		statedb.Prepare(tx.Hash(), idx)
+		if posa, ok := eth.Engine().(consensus.PoSA); ok && msg.From() == context.Coinbase &&
+			posa.IsSystemContract(msg.To()) && msg.GasPrice().Cmp(big.NewInt(0)) == 0 {
+			balance := statedb.GetBalance(consensus.SystemAddress)
+			if balance.Cmp(common.Big0) > 0 {
+				statedb.SetBalance(consensus.SystemAddress, big.NewInt(0))
+				statedb.AddBalance(context.Coinbase, balance)
+			}
+		}
+		statedb.Prepare(tx.Hash(), block.Hash(), idx)
 		if _, err := core.ApplyMessage(vmenv, msg, new(core.GasPool).AddGas(tx.Gas())); err != nil {
 			return nil, vm.BlockContext{}, nil, fmt.Errorf("transaction %#x failed: %v", tx.Hash(), err)
 		}

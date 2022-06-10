@@ -26,6 +26,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	lru "github.com/hashicorp/golang-lru"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/rawdb"
@@ -33,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
-	lru "github.com/hashicorp/golang-lru"
 )
 
 const (
@@ -165,7 +166,6 @@ func (hc *HeaderChain) writeHeaders(headers []*types.Header) (result *headerWrit
 	)
 
 	batch := hc.chainDb.NewBatch()
-	parentKnown := true // Set to true to force hc.HasHeader check the first iteration
 	for i, header := range headers {
 		var hash common.Hash
 		// The headers have already been validated at this point, so we already
@@ -179,10 +179,8 @@ func (hc *HeaderChain) writeHeaders(headers []*types.Header) (result *headerWrit
 		number := header.Number.Uint64()
 		newTD.Add(newTD, header.Difficulty)
 
-		// If the parent was not present, store it
 		// If the header is already known, skip it, otherwise store
-		alreadyKnown := parentKnown && hc.HasHeader(hash, number)
-		if !alreadyKnown {
+		if !hc.HasHeader(hash, number) {
 			// Irrelevant of the canonical status, write the TD and header to the database.
 			rawdb.WriteTd(batch, hash, number, newTD)
 			hc.tdCache.Add(hash, new(big.Int).Set(newTD))
@@ -195,7 +193,6 @@ func (hc *HeaderChain) writeHeaders(headers []*types.Header) (result *headerWrit
 				firstInserted = i
 			}
 		}
-		parentKnown = alreadyKnown
 		lastHeader, lastHash, lastNumber = header, hash, number
 	}
 
@@ -315,11 +312,11 @@ func (hc *HeaderChain) ValidateHeaderChain(chain []*types.Header, checkFreq int)
 		}
 		// If the header is a banned one, straight out abort
 		if BadHashes[chain[i].ParentHash] {
-			return i - 1, ErrBannedHash
+			return i - 1, ErrBlacklistedHash
 		}
 		// If it's the last header in the cunk, we need to check it too
 		if i == len(chain)-1 && BadHashes[chain[i].Hash()] {
-			return i, ErrBannedHash
+			return i, ErrBlacklistedHash
 		}
 	}
 
@@ -394,6 +391,33 @@ func (hc *HeaderChain) InsertHeaderChain(chain []*types.Header, start time.Time)
 	return res.status, err
 }
 
+// GetBlockHashesFromHash retrieves a number of block hashes starting at a given
+// hash, fetching towards the genesis block.
+func (hc *HeaderChain) GetBlockHashesFromHash(hash common.Hash, max uint64) []common.Hash {
+	// Get the origin header from which to fetch
+	header := hc.GetHeaderByHash(hash)
+	if header == nil {
+		return nil
+	}
+	// Iterate the headers until enough is collected or the genesis reached
+	chain := make([]common.Hash, 0, max)
+	for i := uint64(0); i < max; i++ {
+		next := header.ParentHash
+		if header = hc.GetHeader(next, header.Number.Uint64()-1); header == nil {
+			break
+		}
+		chain = append(chain, next)
+		if header.Number.Sign() == 0 {
+			break
+		}
+	}
+	return chain
+}
+
+func (hc *HeaderChain) GetHighestVerifiedHeader() *types.Header {
+	return nil
+}
+
 // GetAncestor retrieves the Nth ancestor of a given block. It assumes that either the given block or
 // a close ancestor of it is canonical. maxNonCanonical points to a downwards counter limiting the
 // number of blocks to be individually checked before we reach the canonical chain.
@@ -447,6 +471,16 @@ func (hc *HeaderChain) GetTd(hash common.Hash, number uint64) *big.Int {
 	// Cache the found body for next time and return
 	hc.tdCache.Add(hash, td)
 	return td
+}
+
+// GetTdByHash retrieves a block's total difficulty in the canonical chain from the
+// database by hash, caching it if found.
+func (hc *HeaderChain) GetTdByHash(hash common.Hash) *big.Int {
+	number := hc.GetBlockNumber(hash)
+	if number == nil {
+		return nil
+	}
+	return hc.GetTd(hash, *number)
 }
 
 // GetHeader retrieves a block header from the database by hash and number,
@@ -541,7 +575,7 @@ func (hc *HeaderChain) SetHead(head uint64, updateFn UpdateHeadBlocksCallback, d
 		if parent == nil {
 			parent = hc.genesisHeader
 		}
-		parentHash = parent.Hash()
+		parentHash = hdr.ParentHash
 
 		// Notably, since geth has the possibility for setting the head to a low
 		// height which is even lower than ancient head.

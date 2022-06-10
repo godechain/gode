@@ -18,15 +18,14 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
+
+	"gopkg.in/urfave/cli.v1"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/console"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/rpc"
-	"gopkg.in/urfave/cli.v1"
 )
 
 var (
@@ -120,25 +119,6 @@ func remoteConsole(ctx *cli.Context) error {
 		if ctx.GlobalIsSet(utils.DataDirFlag.Name) {
 			path = ctx.GlobalString(utils.DataDirFlag.Name)
 		}
-		if path != "" {
-			if ctx.GlobalBool(utils.RopstenFlag.Name) {
-				// Maintain compatibility with older Geth configurations storing the
-				// Ropsten database in `testnet` instead of `ropsten`.
-				legacyPath := filepath.Join(path, "testnet")
-				if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-					path = legacyPath
-				} else {
-					path = filepath.Join(path, "ropsten")
-				}
-			} else if ctx.GlobalBool(utils.RinkebyFlag.Name) {
-				path = filepath.Join(path, "rinkeby")
-			} else if ctx.GlobalBool(utils.GoerliFlag.Name) {
-				path = filepath.Join(path, "goerli")
-			} else if ctx.GlobalBool(utils.MumbaiFlag.Name) || ctx.GlobalBool(utils.BorMainnetFlag.Name) {
-				homeDir, _ := os.UserHomeDir()
-				path = filepath.Join(homeDir, "/.bor/data")
-			}
-		}
 		endpoint = fmt.Sprintf("%s/geth.ipc", path)
 	}
 	client, err := dialRPC(endpoint)
@@ -172,7 +152,7 @@ func remoteConsole(ctx *cli.Context) error {
 
 // dialRPC returns a RPC client which connects to the given endpoint.
 // The check for empty endpoint implements the defaulting logic
-// for "geth attach" with no argument.
+// for "geth attach" and "geth monitor" with no argument.
 func dialRPC(endpoint string) (*rpc.Client, error) {
 	if endpoint == "" {
 		endpoint = node.DefaultIPCEndpoint(clientIdentifier)

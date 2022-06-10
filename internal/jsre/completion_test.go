@@ -72,7 +72,6 @@ func TestCompleteKeywords(t *testing.T) {
 		{
 			input: "x.gazonk.",
 			want: []string{
-				"x.gazonk.__proto__",
 				"x.gazonk.constructor",
 				"x.gazonk.hasOwnProperty",
 				"x.gazonk.isPrototypeOf",

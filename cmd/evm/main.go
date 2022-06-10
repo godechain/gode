@@ -129,13 +129,18 @@ var (
 		Name:  "noreturndata",
 		Usage: "enable return data output",
 	}
+	EVMInterpreterFlag = cli.StringFlag{
+		Name:  "vm.evm",
+		Usage: "External EVM configuration (default = built-in interpreter)",
+		Value: "",
+	}
 )
 
 var stateTransitionCommand = cli.Command{
 	Name:    "transition",
 	Aliases: []string{"t8n"},
 	Usage:   "executes a full state transition",
-	Action:  t8ntool.Transition,
+	Action:  t8ntool.Main,
 	Flags: []cli.Flag{
 		t8ntool.TraceFlag,
 		t8ntool.TraceDisableMemoryFlag,
@@ -151,18 +156,6 @@ var stateTransitionCommand = cli.Command{
 		t8ntool.ForknameFlag,
 		t8ntool.ChainIDFlag,
 		t8ntool.RewardFlag,
-		t8ntool.VerbosityFlag,
-	},
-}
-var transactionCommand = cli.Command{
-	Name:    "transaction",
-	Aliases: []string{"t9n"},
-	Usage:   "performs transaction validation",
-	Action:  t8ntool.Transaction,
-	Flags: []cli.Flag{
-		t8ntool.InputTxsFlag,
-		t8ntool.ChainIDFlag,
-		t8ntool.ForknameFlag,
 		t8ntool.VerbosityFlag,
 	},
 }
@@ -192,6 +185,7 @@ func init() {
 		DisableStackFlag,
 		DisableStorageFlag,
 		DisableReturnDataFlag,
+		EVMInterpreterFlag,
 	}
 	app.Commands = []cli.Command{
 		compileCommand,
@@ -199,7 +193,6 @@ func init() {
 		runCommand,
 		stateTestCommand,
 		stateTransitionCommand,
-		transactionCommand,
 	}
 	cli.CommandHelpTemplate = flags.OriginCommandHelpTemplate
 }
@@ -208,7 +201,7 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		code := 1
 		if ec, ok := err.(*t8ntool.NumberedError); ok {
-			code = ec.ExitCode()
+			code = ec.Code()
 		}
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(code)

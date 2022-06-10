@@ -62,16 +62,20 @@ func (t *table) Ancient(kind string, number uint64) ([]byte, error) {
 	return t.db.Ancient(kind, number)
 }
 
-// ReadAncients is a noop passthrough that just forwards the request to the underlying
-// database.
-func (t *table) ReadAncients(kind string, start, count, maxBytes uint64) ([][]byte, error) {
-	return t.db.ReadAncients(kind, start, count, maxBytes)
-}
-
 // Ancients is a noop passthrough that just forwards the request to the underlying
 // database.
 func (t *table) Ancients() (uint64, error) {
 	return t.db.Ancients()
+}
+
+// ItemAmountInAncient returns the actual length of current ancientDB.
+func (t *table) ItemAmountInAncient() (uint64, error) {
+	return t.db.ItemAmountInAncient()
+}
+
+// AncientOffSet returns the offset of current ancientDB.
+func (t *table) AncientOffSet() uint64 {
+	return t.db.AncientOffSet()
 }
 
 // AncientSize is a noop passthrough that just forwards the request to the underlying
@@ -80,9 +84,10 @@ func (t *table) AncientSize(kind string) (uint64, error) {
 	return t.db.AncientSize(kind)
 }
 
-// ModifyAncients runs an ancient write operation on the underlying database.
-func (t *table) ModifyAncients(fn func(ethdb.AncientWriteOp) error) (int64, error) {
-	return t.db.ModifyAncients(fn)
+// AppendAncient is a noop passthrough that just forwards the request to the underlying
+// database.
+func (t *table) AppendAncient(number uint64, hash, header, body, receipts, td []byte) error {
+	return t.db.AppendAncient(number, hash, header, body, receipts, td)
 }
 
 // TruncateAncients is a noop passthrough that just forwards the request to the underlying
@@ -136,8 +141,6 @@ func (t *table) Compact(start []byte, limit []byte) error {
 	// If no start was specified, use the table prefix as the first value
 	if start == nil {
 		start = []byte(t.prefix)
-	} else {
-		start = append([]byte(t.prefix), start...)
 	}
 	// If no limit was specified, use the first element not matching the prefix
 	// as the limit
@@ -154,8 +157,6 @@ func (t *table) Compact(start []byte, limit []byte) error {
 				limit = nil
 			}
 		}
-	} else {
-		limit = append([]byte(t.prefix), limit...)
 	}
 	// Range correctly calculated based on table prefix, delegate down
 	return t.db.Compact(start, limit)
@@ -166,6 +167,14 @@ func (t *table) Compact(start []byte, limit []byte) error {
 // pre-configured string.
 func (t *table) NewBatch() ethdb.Batch {
 	return &tableBatch{t.db.NewBatch(), t.prefix}
+}
+
+func (t *table) DiffStore() ethdb.KeyValueStore {
+	return nil
+}
+
+func (t *table) SetDiffStore(diff ethdb.KeyValueStore) {
+	panic("not implement")
 }
 
 // tableBatch is a wrapper around a database batch that prefixes each key access

@@ -24,6 +24,8 @@ import (
 	"strconv"
 	"time"
 
+	"gopkg.in/urfave/cli.v1"
+
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -32,7 +34,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/trie"
-	"gopkg.in/urfave/cli.v1"
 )
 
 var (
@@ -62,6 +63,7 @@ Remove blockchain and state databases`,
 			dbPutCmd,
 			dbGetSlotsCmd,
 			dbDumpFreezerIndex,
+			ancientInspectCmd,
 		},
 	}
 	dbInspectCmd = cli.Command{
@@ -71,12 +73,6 @@ Remove blockchain and state databases`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Usage:       "Inspect the storage size for each type of data in the database",
 		Description: `This commands iterates the entire database. If the optional 'prefix' and 'start' arguments are provided, then the iteration is limited to the given subset of data.`,
@@ -88,12 +84,6 @@ Remove blockchain and state databases`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 	}
 	dbCompactCmd = cli.Command{
@@ -103,12 +93,6 @@ Remove blockchain and state databases`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 			utils.CacheFlag,
 			utils.CacheDatabaseFlag,
 		},
@@ -124,12 +108,6 @@ corruption if it is aborted during execution'!`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Description: "This command looks up the specified database key from the database.",
 	}
@@ -141,12 +119,6 @@ corruption if it is aborted during execution'!`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Description: `This command deletes the specified database key from the database. 
 WARNING: This is a low-level operation which may cause database corruption!`,
@@ -159,12 +131,6 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Description: `This command sets a given database key to the given value. 
 WARNING: This is a low-level operation which may cause database corruption!`,
@@ -177,12 +143,6 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Description: "This command looks up the specified database key from the database.",
 	}
@@ -194,14 +154,18 @@ WARNING: This is a low-level operation which may cause database corruption!`,
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
 			utils.SyncModeFlag,
-			utils.MainnetFlag,
-			utils.RopstenFlag,
-			utils.RinkebyFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
 		},
 		Description: "This command displays information about the freezer index.",
+	}
+	ancientInspectCmd = cli.Command{
+		Action: utils.MigrateFlags(ancientInspect),
+		Name:   "inspect-reserved-oldest-blocks",
+		Flags: []cli.Flag{
+			utils.DataDirFlag,
+		},
+		Usage: "Inspect the ancientStore information",
+		Description: `This commands will read current offset from kvdb, which is the current offset and starting BlockNumber
+of ancientStore, will also displays the reserved number of blocks in ancientStore `,
 	}
 )
 
@@ -290,10 +254,19 @@ func inspect(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
+	db := utils.MakeChainDatabase(ctx, stack, true, false)
 	defer db.Close()
 
 	return rawdb.InspectDatabase(db, prefix, start)
+}
+
+func ancientInspect(ctx *cli.Context) error {
+	stack, _ := makeConfigNode(ctx)
+	defer stack.Close()
+
+	db := utils.MakeChainDatabase(ctx, stack, true, true)
+	defer db.Close()
+	return rawdb.AncientInspect(db)
 }
 
 func showLeveldbStats(db ethdb.Stater) {
@@ -313,7 +286,7 @@ func dbStats(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
+	db := utils.MakeChainDatabase(ctx, stack, true, false)
 	defer db.Close()
 
 	showLeveldbStats(db)
@@ -324,7 +297,7 @@ func dbCompact(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, false)
+	db := utils.MakeChainDatabase(ctx, stack, false, false)
 	defer db.Close()
 
 	log.Info("Stats before compaction")
@@ -348,7 +321,7 @@ func dbGet(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
+	db := utils.MakeChainDatabase(ctx, stack, true, false)
 	defer db.Close()
 
 	key, err := hexutil.Decode(ctx.Args().Get(0))
@@ -373,7 +346,7 @@ func dbDelete(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, false)
+	db := utils.MakeChainDatabase(ctx, stack, false, false)
 	defer db.Close()
 
 	key, err := hexutil.Decode(ctx.Args().Get(0))
@@ -400,7 +373,7 @@ func dbPut(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, false)
+	db := utils.MakeChainDatabase(ctx, stack, false, false)
 	defer db.Close()
 
 	var (
@@ -434,7 +407,7 @@ func dbDumpTrie(ctx *cli.Context) error {
 	stack, _ := makeConfigNode(ctx)
 	defer stack.Close()
 
-	db := utils.MakeChainDatabase(ctx, stack, true)
+	db := utils.MakeChainDatabase(ctx, stack, true, false)
 	defer db.Close()
 	var (
 		root  []byte

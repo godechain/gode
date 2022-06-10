@@ -21,9 +21,7 @@ import (
 )
 
 var (
-	totalActiveCapacityGauge = metrics.NewRegisteredGauge("vflux/server/active/capacity", nil)
-	totalActiveCountGauge    = metrics.NewRegisteredGauge("vflux/server/active/count", nil)
-	totalInactiveCountGauge  = metrics.NewRegisteredGauge("vflux/server/inactive/count", nil)
+	totalConnectedGauge = metrics.NewRegisteredGauge("vflux/server/totalConnected", nil)
 
 	clientConnectedMeter    = metrics.NewRegisteredMeter("vflux/server/clientEvent/connected", nil)
 	clientActivatedMeter    = metrics.NewRegisteredMeter("vflux/server/clientEvent/activated", nil)

@@ -54,34 +54,33 @@ func TestDump(t *testing.T) {
 	// write some of them to the trie
 	s.state.updateStateObject(obj1)
 	s.state.updateStateObject(obj2)
-	s.state.Commit(false)
+	s.state.Finalise(false)
+	s.state.AccountsIntermediateRoot()
+	s.state.Commit(nil)
 
 	// check that DumpToCollector contains the state objects that are in trie
-	got := string(s.state.Dump(nil))
+	got := string(s.state.Dump(false, false, true))
 	want := `{
     "root": "71edff0130dd2385947095001c73d9e28d862fc286fca2b922ca6f6f3cddfdd2",
     "accounts": {
         "0x0000000000000000000000000000000000000001": {
             "balance": "22",
             "nonce": 0,
-            "root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
-            "codeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-            "key": "0x1468288056310c82aa4c01a7e12a10f8111a0560e72b700555479031b86c357d"
+            "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "codeHash": "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
         },
         "0x0000000000000000000000000000000000000002": {
             "balance": "44",
             "nonce": 0,
-            "root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
-            "codeHash": "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
-            "key": "0xd52688a8f926c816ca1e079067caba944f158e764817b83fc43594370ca9cf62"
+            "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "codeHash": "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
         },
         "0x0000000000000000000000000000000000000102": {
             "balance": "0",
             "nonce": 0,
-            "root": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
-            "codeHash": "0x87874902497a5bb968da31a2998d8f22e949d1ef6214bcdedd8bae24cca4b9e3",
-            "code": "0x03030303030303",
-            "key": "0xa17eacbc25cda025e81db9c5c62868822c73ce097cee2a63e33a2e41268358a1"
+            "root": "56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+            "codeHash": "87874902497a5bb968da31a2998d8f22e949d1ef6214bcdedd8bae24cca4b9e3",
+            "code": "03030303030303"
         }
     }
 }`
@@ -98,7 +97,9 @@ func TestNull(t *testing.T) {
 	var value common.Hash
 
 	s.state.SetState(address, common.Hash{}, value)
-	s.state.Commit(false)
+	s.state.Finalise(false)
+	s.state.AccountsIntermediateRoot()
+	s.state.Commit(nil)
 
 	if value := s.state.GetState(address, common.Hash{}); value != (common.Hash{}) {
 		t.Errorf("expected empty current value, got %x", value)
@@ -168,9 +169,11 @@ func TestSnapshot2(t *testing.T) {
 	so0.SetCode(crypto.Keccak256Hash([]byte{'c', 'a', 'f', 'e'}), []byte{'c', 'a', 'f', 'e'})
 	so0.suicided = false
 	so0.deleted = false
-	state.setStateObject(so0)
+	state.SetStateObject(so0)
 
-	root, _ := state.Commit(false)
+	state.Finalise(false)
+	state.AccountsIntermediateRoot()
+	root, _, _ := state.Commit(nil)
 	state, _ = New(root, state.db, state.snaps)
 
 	// and one with deleted == true
@@ -180,7 +183,7 @@ func TestSnapshot2(t *testing.T) {
 	so1.SetCode(crypto.Keccak256Hash([]byte{'c', 'a', 'f', 'e', '2'}), []byte{'c', 'a', 'f', 'e', '2'})
 	so1.suicided = true
 	so1.deleted = true
-	state.setStateObject(so1)
+	state.SetStateObject(so1)
 
 	so1 = state.getStateObject(stateobjaddr1)
 	if so1 != nil {
@@ -204,7 +207,7 @@ func TestSnapshot2(t *testing.T) {
 	}
 }
 
-func compareStateObjects(so0, so1 *stateObject, t *testing.T) {
+func compareStateObjects(so0, so1 *StateObject, t *testing.T) {
 	if so0.Address() != so1.Address() {
 		t.Fatalf("Address mismatch: have %v, want %v", so0.address, so1.address)
 	}

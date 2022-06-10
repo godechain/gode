@@ -23,7 +23,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethdb/memorydb"
@@ -70,7 +69,9 @@ func makeTestState() (Database, common.Hash, []*testAccount) {
 		state.updateStateObject(obj)
 		accounts = append(accounts, acc)
 	}
-	root, _ := state.Commit(false)
+	state.Finalise(false)
+	state.AccountsIntermediateRoot()
+	root, _, _ := state.Commit(nil)
 
 	// Return the generated state
 	return db, root, accounts
@@ -204,7 +205,7 @@ func testIterativeStateSync(t *testing.T, count int, commit bool, bypath bool) {
 				}
 				results[len(hashQueue)+i] = trie.SyncResult{Hash: crypto.Keccak256Hash(data), Data: data}
 			} else {
-				var acc types.StateAccount
+				var acc Account
 				if err := rlp.DecodeBytes(srcTrie.Get(path[0]), &acc); err != nil {
 					t.Fatalf("failed to decode account on path %x: %v", path, err)
 				}

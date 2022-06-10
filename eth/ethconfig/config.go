@@ -19,23 +19,17 @@ package ethconfig
 
 import (
 	"math/big"
-	"os"
-	"os/user"
-	"path/filepath"
-	"runtime"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
-	"github.com/ethereum/go-ethereum/consensus/bor"
 	"github.com/ethereum/go-ethereum/consensus/clique"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
+	"github.com/ethereum/go-ethereum/consensus/parlia"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/params"
@@ -43,36 +37,22 @@ import (
 
 // FullNodeGPO contains default gasprice oracle settings for full node.
 var FullNodeGPO = gasprice.Config{
-	Blocks:           20,
-	Percentile:       60,
-	MaxHeaderHistory: 1024,
-	MaxBlockHistory:  1024,
-	MaxPrice:         gasprice.DefaultMaxPrice,
-	IgnorePrice:      gasprice.DefaultIgnorePrice,
+	Blocks:          20,
+	Percentile:      60,
+	MaxPrice:        gasprice.DefaultMaxPrice,
+	OracleThreshold: 1000,
 }
 
 // LightClientGPO contains default gasprice oracle settings for light client.
 var LightClientGPO = gasprice.Config{
-	Blocks:           2,
-	Percentile:       60,
-	MaxHeaderHistory: 300,
-	MaxBlockHistory:  5,
-	MaxPrice:         gasprice.DefaultMaxPrice,
-	IgnorePrice:      gasprice.DefaultIgnorePrice,
+	Blocks:     2,
+	Percentile: 60,
+	MaxPrice:   gasprice.DefaultMaxPrice,
 }
 
 // Defaults contains default settings for use on the Ethereum main net.
 var Defaults = Config{
-	SyncMode: downloader.SnapSync,
-	Ethash: ethash.Config{
-		CacheDir:         "ethash",
-		CachesInMem:      2,
-		CachesOnDisk:     3,
-		CachesLockMmap:   false,
-		DatasetsInMem:    1,
-		DatasetsOnDisk:   2,
-		DatasetsLockMmap: false,
-	},
+	SyncMode:                downloader.FastSync,
 	NetworkId:               1,
 	TxLookupLimit:           2350000,
 	LightPeers:              100,
@@ -83,38 +63,20 @@ var Defaults = Config{
 	TrieCleanCacheRejournal: 60 * time.Minute,
 	TrieDirtyCache:          256,
 	TrieTimeout:             60 * time.Minute,
+	TriesInMemory:           128,
 	SnapshotCache:           102,
+	DiffBlock:               uint64(86400),
 	Miner: miner.Config{
-		GasCeil:  8000000,
-		GasPrice: big.NewInt(params.GWei),
-		Recommit: 3 * time.Second,
+		GasFloor:      8000000,
+		GasCeil:       8000000,
+		GasPrice:      big.NewInt(params.GWei),
+		Recommit:      3 * time.Second,
+		DelayLeftOver: 50 * time.Millisecond,
 	},
-	TxPool:        core.DefaultTxPoolConfig,
-	RPCGasCap:     50000000,
-	RPCEVMTimeout: 5 * time.Second,
-	GPO:           FullNodeGPO,
-	RPCTxFeeCap:   1, // 1 ether
-}
-
-func init() {
-	home := os.Getenv("HOME")
-	if home == "" {
-		if user, err := user.Current(); err == nil {
-			home = user.HomeDir
-		}
-	}
-	if runtime.GOOS == "darwin" {
-		Defaults.Ethash.DatasetDir = filepath.Join(home, "Library", "Ethash")
-	} else if runtime.GOOS == "windows" {
-		localappdata := os.Getenv("LOCALAPPDATA")
-		if localappdata != "" {
-			Defaults.Ethash.DatasetDir = filepath.Join(localappdata, "Ethash")
-		} else {
-			Defaults.Ethash.DatasetDir = filepath.Join(home, "AppData", "Local", "Ethash")
-		}
-	} else {
-		Defaults.Ethash.DatasetDir = filepath.Join(home, ".ethash")
-	}
+	TxPool:      core.DefaultTxPoolConfig,
+	RPCGasCap:   25000000,
+	GPO:         FullNodeGPO,
+	RPCTxFeeCap: 1, // 1 ether
 }
 
 //go:generate gencodec -type Config -formats toml -out gen_config.go
@@ -126,16 +88,21 @@ type Config struct {
 	Genesis *core.Genesis `toml:",omitempty"`
 
 	// Protocol options
-	NetworkId uint64 // Network ID to use for selecting peers to connect to
-	SyncMode  downloader.SyncMode
+	NetworkId              uint64 // Network ID to use for selecting peers to connect to
+	SyncMode               downloader.SyncMode
+	DisablePeerTxBroadcast bool
 
 	// This can be set to list of enrtree:// URLs which will be queried for
 	// for nodes to connect to.
 	EthDiscoveryURLs  []string
 	SnapDiscoveryURLs []string
 
-	NoPruning  bool // Whether to disable pruning and flush everything to disk
-	NoPrefetch bool // Whether to disable prefetching and only load state on demand
+	NoPruning           bool // Whether to disable pruning and flush everything to disk
+	DirectBroadcast     bool
+	DisableSnapProtocol bool //Whether disable snap protocol
+	DiffSync            bool // Whether support diff sync
+	PipeCommit          bool
+	RangeLimit          bool
 
 	TxLookupLimit uint64 `toml:",omitempty"` // The maximum number of blocks from head whose tx indices are reserved.
 
@@ -161,6 +128,9 @@ type Config struct {
 	DatabaseHandles    int  `toml:"-"`
 	DatabaseCache      int
 	DatabaseFreezer    string
+	DatabaseDiff       string
+	PersistDiff        bool
+	DiffBlock          uint64
 
 	TrieCleanCache          int
 	TrieCleanCacheJournal   string        `toml:",omitempty"` // Disk journal directory for trie cache to survive node restarts
@@ -168,13 +138,11 @@ type Config struct {
 	TrieDirtyCache          int
 	TrieTimeout             time.Duration
 	SnapshotCache           int
+	TriesInMemory           uint64
 	Preimages               bool
 
 	// Mining options
 	Miner miner.Config
-
-	// Ethash options
-	Ethash ethash.Config
 
 	// Transaction pool options
 	TxPool core.TxPoolConfig
@@ -188,11 +156,14 @@ type Config struct {
 	// Miscellaneous options
 	DocRoot string `toml:"-"`
 
+	// Type of the EWASM interpreter ("" for default)
+	EWASMInterpreter string
+
+	// Type of the EVM interpreter ("" for default)
+	EVMInterpreter string
+
 	// RPCGasCap is the global gas cap for eth-call variants.
 	RPCGasCap uint64
-
-	// RPCEVMTimeout is the global timeout for eth-call.
-	RPCEVMTimeout time.Duration
 
 	// RPCTxFeeCap is the global transaction fee(price * gaslimit) cap for
 	// send-transction variants. The unit is ether.
@@ -204,55 +175,18 @@ type Config struct {
 	// CheckpointOracle is the configuration for checkpoint oracle.
 	CheckpointOracle *params.CheckpointOracleConfig `toml:",omitempty"`
 
-	// URL to connect to Heimdall node
-	HeimdallURL string
-
-	// No heimdall service
-	WithoutHeimdall bool
-
 	// Berlin block override (TODO: remove after the fork)
 	OverrideBerlin *big.Int `toml:",omitempty"`
-	OverrideLondon *big.Int `toml:",omitempty"`
-
-	// Bor logs flag
-	BorLogs bool
 }
 
 // CreateConsensusEngine creates a consensus engine for the given chain configuration.
-func CreateConsensusEngine(stack *node.Node, chainConfig *params.ChainConfig, ethConfig *Config, db ethdb.Database, blockchainAPI *ethapi.PublicBlockChainAPI) consensus.Engine {
-	config := &ethConfig.Ethash
-	notify := ethConfig.Miner.Notify
-	noverify := ethConfig.Miner.Noverify
-
+func CreateConsensusEngine(stack *node.Node, chainConfig *params.ChainConfig, notify []string, noverify bool, db ethdb.Database, ee *ethapi.PublicBlockChainAPI, genesisHash common.Hash) consensus.Engine {
 	// If proof-of-authority is requested, set it up
 	if chainConfig.Clique != nil {
 		return clique.New(chainConfig.Clique, db)
 	}
-	// If Matic bor consensus is requested, set it up
-	if chainConfig.Bor != nil {
-		return bor.New(chainConfig, db, blockchainAPI, ethConfig.HeimdallURL, ethConfig.WithoutHeimdall)
+	if chainConfig.Parlia != nil {
+		return parlia.New(chainConfig, db, ee, genesisHash)
 	}
-	// Otherwise assume proof-of-work
-	switch config.PowMode {
-	case ethash.ModeFake:
-		log.Warn("Ethash used in fake mode")
-	case ethash.ModeTest:
-		log.Warn("Ethash used in test mode")
-	case ethash.ModeShared:
-		log.Warn("Ethash used in shared mode")
-	}
-	engine := ethash.New(ethash.Config{
-		PowMode:          config.PowMode,
-		CacheDir:         stack.ResolvePath(config.CacheDir),
-		CachesInMem:      config.CachesInMem,
-		CachesOnDisk:     config.CachesOnDisk,
-		CachesLockMmap:   config.CachesLockMmap,
-		DatasetDir:       config.DatasetDir,
-		DatasetsInMem:    config.DatasetsInMem,
-		DatasetsOnDisk:   config.DatasetsOnDisk,
-		DatasetsLockMmap: config.DatasetsLockMmap,
-		NotifyFull:       config.NotifyFull,
-	}, notify, noverify)
-	engine.SetThreads(-1) // Disable CPU mining
-	return engine
+	panic("no consensus engine")
 }

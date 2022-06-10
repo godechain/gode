@@ -251,7 +251,7 @@ func (h *httpServer) doStop() {
 
 	// Shut down the server.
 	httpHandler := h.httpHandler.Load().(*rpcHandler)
-	wsHandler := h.wsHandler.Load().(*rpcHandler)
+	wsHandler := h.httpHandler.Load().(*rpcHandler)
 	if httpHandler != nil {
 		h.httpHandler.Store((*rpcHandler)(nil))
 		httpHandler.server.Stop()
@@ -280,7 +280,7 @@ func (h *httpServer) enableRPC(apis []rpc.API, config httpConfig) error {
 
 	// Create RPC server and handler.
 	srv := rpc.NewServer()
-	if err := RegisterApis(apis, config.Modules, srv, false); err != nil {
+	if err := RegisterApisFromWhitelist(apis, config.Modules, srv, false); err != nil {
 		return err
 	}
 	h.httpConfig = config
@@ -312,7 +312,7 @@ func (h *httpServer) enableWS(apis []rpc.API, config wsConfig) error {
 
 	// Create RPC server and handler.
 	srv := rpc.NewServer()
-	if err := RegisterApis(apis, config.Modules, srv, false); err != nil {
+	if err := RegisterApisFromWhitelist(apis, config.Modules, srv, false); err != nil {
 		return err
 	}
 	h.wsConfig = config
@@ -515,20 +515,20 @@ func (is *ipcServer) stop() error {
 	return err
 }
 
-// RegisterApis checks the given modules' availability, generates an allowlist based on the allowed modules,
+// RegisterApisFromWhitelist checks the given modules' availability, generates a whitelist based on the allowed modules,
 // and then registers all of the APIs exposed by the services.
-func RegisterApis(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll bool) error {
+func RegisterApisFromWhitelist(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll bool) error {
 	if bad, available := checkModuleAvailability(modules, apis); len(bad) > 0 {
 		log.Error("Unavailable modules in HTTP API list", "unavailable", bad, "available", available)
 	}
-	// Generate the allow list based on the allowed modules
-	allowList := make(map[string]bool)
+	// Generate the whitelist based on the allowed modules
+	whitelist := make(map[string]bool)
 	for _, module := range modules {
-		allowList[module] = true
+		whitelist[module] = true
 	}
 	// Register all the APIs exposed by the services
 	for _, api := range apis {
-		if exposeAll || allowList[api.Namespace] || (len(allowList) == 0 && api.Public) {
+		if exposeAll || whitelist[api.Namespace] || (len(whitelist) == 0 && api.Public) {
 			if err := srv.RegisterName(api.Namespace, api.Service); err != nil {
 				return err
 			}

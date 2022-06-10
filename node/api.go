@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/internal/debug"
@@ -141,7 +142,7 @@ func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, 
 	}
 	rpcSub := notifier.CreateSubscription()
 
-	go func() {
+	gopool.Submit(func() {
 		events := make(chan *p2p.PeerEvent)
 		sub := server.SubscribeEvents(events)
 		defer sub.Unsubscribe()
@@ -158,7 +159,7 @@ func (api *privateAdminAPI) PeerEvents(ctx context.Context) (*rpc.Subscription, 
 				return
 			}
 		}
-	}()
+	})
 
 	return rpcSub, nil
 }
@@ -218,7 +219,7 @@ func (api *privateAdminAPI) StartHTTP(host *string, port *int, cors *string, api
 }
 
 // StartRPC starts the HTTP RPC API server.
-// Deprecated: use StartHTTP instead.
+// This method is deprecated. Use StartHTTP instead.
 func (api *privateAdminAPI) StartRPC(host *string, port *int, cors *string, apis *string, vhosts *string) (bool, error) {
 	log.Warn("Deprecation warning", "method", "admin.StartRPC", "use-instead", "admin.StartHTTP")
 	return api.StartHTTP(host, port, cors, apis, vhosts)
@@ -231,7 +232,7 @@ func (api *privateAdminAPI) StopHTTP() (bool, error) {
 }
 
 // StopRPC shuts down the HTTP server.
-// Deprecated: use StopHTTP instead.
+// This method is deprecated. Use StopHTTP instead.
 func (api *privateAdminAPI) StopRPC() (bool, error) {
 	log.Warn("Deprecation warning", "method", "admin.StopRPC", "use-instead", "admin.StopHTTP")
 	return api.StopHTTP()

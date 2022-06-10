@@ -27,6 +27,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p/enode"
@@ -77,7 +78,7 @@ var (
 	errAlreadyDialing   = errors.New("already dialing")
 	errAlreadyConnected = errors.New("already connected")
 	errRecentlyDialed   = errors.New("recently dialed")
-	errNetRestrict      = errors.New("not contained in netrestrict list")
+	errNotWhitelisted   = errors.New("not contained in netrestrict whitelist")
 	errNoPort           = errors.New("node does not provide TCP port")
 )
 
@@ -107,7 +108,7 @@ type dialScheduler struct {
 	// Everything below here belongs to loop and
 	// should only be accessed by code on the loop goroutine.
 	dialing   map[enode.ID]*dialTask // active tasks
-	peers     map[enode.ID]struct{}  // all connected peers
+	peers     map[enode.ID]connFlag  // all connected peers
 	dialPeers int                    // current number of dialed peers
 
 	// The static map tracks all static dial tasks. The subset of usable static dial tasks
@@ -133,7 +134,7 @@ type dialConfig struct {
 	self           enode.ID         // our own ID
 	maxDialPeers   int              // maximum number of dialed peers
 	maxActiveDials int              // maximum number of active dials
-	netRestrict    *netutil.Netlist // IP netrestrict list, disabled if nil
+	netRestrict    *netutil.Netlist // IP whitelist, disabled if nil
 	resolver       nodeResolver
 	dialer         NodeDialer
 	log            log.Logger
@@ -166,7 +167,7 @@ func newDialScheduler(config dialConfig, it enode.Iterator, setupFunc dialSetupF
 		setupFunc:   setupFunc,
 		dialing:     make(map[enode.ID]*dialTask),
 		static:      make(map[enode.ID]*dialTask),
-		peers:       make(map[enode.ID]struct{}),
+		peers:       make(map[enode.ID]connFlag),
 		doneCh:      make(chan *dialTask),
 		nodesIn:     make(chan *enode.Node),
 		addStaticCh: make(chan *enode.Node),
@@ -177,8 +178,13 @@ func newDialScheduler(config dialConfig, it enode.Iterator, setupFunc dialSetupF
 	d.lastStatsLog = d.clock.Now()
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.wg.Add(2)
-	go d.readNodes(it)
-	go d.loop(it)
+	gopool.Submit(func() {
+		d.readNodes(it)
+	})
+	gopool.Submit(
+		func() {
+			d.loop(it)
+		})
 	return d
 }
 
@@ -259,7 +265,7 @@ loop:
 				d.dialPeers++
 			}
 			id := c.node.ID()
-			d.peers[id] = struct{}{}
+			d.peers[id] = c.flags
 			// Remove from static pool because the node is now connected.
 			task := d.static[id]
 			if task != nil && task.staticPoolIndex >= 0 {
@@ -402,7 +408,7 @@ func (d *dialScheduler) checkDial(n *enode.Node) error {
 		return errAlreadyConnected
 	}
 	if d.netRestrict != nil && !d.netRestrict.Contains(n.IP()) {
-		return errNetRestrict
+		return errNotWhitelisted
 	}
 	if d.history.contains(string(n.ID().Bytes())) {
 		return errRecentlyDialed
@@ -455,10 +461,10 @@ func (d *dialScheduler) startDial(task *dialTask) {
 	hkey := string(task.dest.ID().Bytes())
 	d.history.add(hkey, d.clock.Now().Add(dialHistoryExpiration))
 	d.dialing[task.dest.ID()] = task
-	go func() {
+	gopool.Submit(func() {
 		task.run(d)
 		d.doneCh <- task
-	}()
+	})
 }
 
 // A dialTask generated for each node that is dialed.

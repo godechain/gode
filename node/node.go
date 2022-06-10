@@ -21,19 +21,22 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/prometheus/tsdb/fileutil"
+
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/ethdb/leveldb"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/prometheus/tsdb/fileutil"
 )
 
 // Node is a container on which services can be registered.
@@ -42,8 +45,7 @@ type Node struct {
 	config        *Config
 	accman        *accounts.Manager
 	log           log.Logger
-	keyDir        string            // key store directory
-	keyDirTemp    bool              // If true, key directory will be removed by Stop
+	ephemKeystore string            // if non-empty, the key directory that will be removed by Stop
 	dirLock       fileutil.Releaser // prevents concurrent use of instance directory
 	stop          chan struct{}     // Channel to wait for termination notifications
 	server        *p2p.Server       // Currently running P2P networking layer
@@ -67,6 +69,8 @@ const (
 	closedState
 )
 
+const chainDataHandlesPercentage = 80
+
 // New creates a new P2P node, ready for protocol registration.
 func New(conf *Config) (*Node, error) {
 	// Copy config and resolve the datadir so future changes to the current
@@ -79,6 +83,15 @@ func New(conf *Config) (*Node, error) {
 			return nil, err
 		}
 		conf.DataDir = absdatadir
+	}
+	if conf.LogConfig != nil {
+		logFilePath := ""
+		if conf.LogConfig.FileRoot == "" {
+			logFilePath = path.Join(conf.DataDir, conf.LogConfig.FilePath)
+		} else {
+			logFilePath = path.Join(conf.LogConfig.FileRoot, conf.LogConfig.FilePath)
+		}
+		log.Root().SetHandler(log.NewFileLvlHandler(logFilePath, conf.LogConfig.MaxBytesSize, conf.LogConfig.Level))
 	}
 	if conf.Logger == nil {
 		conf.Logger = log.New()
@@ -113,15 +126,14 @@ func New(conf *Config) (*Node, error) {
 	if err := node.openDataDir(); err != nil {
 		return nil, err
 	}
-	keyDir, isEphem, err := getKeyStoreDir(conf)
+	// Ensure that the AccountManager method works before the node has started. We rely on
+	// this in cmd/geth.
+	am, ephemeralKeystore, err := makeAccountManager(conf)
 	if err != nil {
 		return nil, err
 	}
-	node.keyDir = keyDir
-	node.keyDirTemp = isEphem
-	// Creates an empty AccountManager with no backends. Callers (e.g. cmd/geth)
-	// are required to add the backends later on.
-	node.accman = accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed})
+	node.accman = am
+	node.ephemKeystore = ephemeralKeystore
 
 	// Initialize the p2p server. This creates the node key and discovery databases.
 	node.server.Config.PrivateKey = node.config.NodeKey()
@@ -235,8 +247,8 @@ func (n *Node) doClose(errs []error) error {
 	if err := n.accman.Close(); err != nil {
 		errs = append(errs, err)
 	}
-	if n.keyDirTemp {
-		if err := os.RemoveAll(n.keyDir); err != nil {
+	if n.ephemKeystore != "" {
+		if err := os.RemoveAll(n.ephemKeystore); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -516,11 +528,6 @@ func (n *Node) InstanceDir() string {
 	return n.config.instanceDir()
 }
 
-// KeyStoreDir retrieves the key directory
-func (n *Node) KeyStoreDir() string {
-	return n.keyDir
-}
-
 // AccountManager retrieves the account manager used by the protocol stack.
 func (n *Node) AccountManager() *accounts.Manager {
 	return n.accman
@@ -575,12 +582,32 @@ func (n *Node) OpenDatabase(name string, cache, handles int, namespace string, r
 	return db, err
 }
 
+func (n *Node) OpenAndMergeDatabase(name string, cache, handles int, freezer, diff, namespace string, readonly, persistDiff bool) (ethdb.Database, error) {
+	chainDataHandles := handles
+	if persistDiff {
+		chainDataHandles = handles * chainDataHandlesPercentage / 100
+	}
+	chainDB, err := n.OpenDatabaseWithFreezer(name, cache, chainDataHandles, freezer, namespace, readonly, false, false)
+	if err != nil {
+		return nil, err
+	}
+	if persistDiff {
+		diffStore, err := n.OpenDiffDatabase(name, handles-chainDataHandles, diff, namespace, readonly)
+		if err != nil {
+			chainDB.Close()
+			return nil, err
+		}
+		chainDB.SetDiffStore(diffStore)
+	}
+	return chainDB, nil
+}
+
 // OpenDatabaseWithFreezer opens an existing database with the given name (or
 // creates one if no previous can be found) from within the node's data directory,
 // also attaching a chain freezer to it that moves ancient chain data from the
 // database to immutable append-only files. If the node is an ephemeral one, a
 // memory database is returned.
-func (n *Node) OpenDatabaseWithFreezer(name string, cache, handles int, freezer, namespace string, readonly bool) (ethdb.Database, error) {
+func (n *Node) OpenDatabaseWithFreezer(name string, cache, handles int, freezer, namespace string, readonly, disableFreeze, isLastOffset bool) (ethdb.Database, error) {
 	n.lock.Lock()
 	defer n.lock.Unlock()
 	if n.state == closedState {
@@ -599,12 +626,36 @@ func (n *Node) OpenDatabaseWithFreezer(name string, cache, handles int, freezer,
 		case !filepath.IsAbs(freezer):
 			freezer = n.ResolvePath(freezer)
 		}
-		db, err = rawdb.NewLevelDBDatabaseWithFreezer(root, cache, handles, freezer, namespace, readonly)
+		db, err = rawdb.NewLevelDBDatabaseWithFreezer(root, cache, handles, freezer, namespace, readonly, disableFreeze, isLastOffset)
 	}
 
 	if err == nil {
 		db = n.wrapDatabase(db)
 	}
+	return db, err
+}
+
+func (n *Node) OpenDiffDatabase(name string, handles int, diff, namespace string, readonly bool) (*leveldb.Database, error) {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+	if n.state == closedState {
+		return nil, ErrNodeStopped
+	}
+
+	var db *leveldb.Database
+	var err error
+	if n.config.DataDir == "" {
+		panic("datadir is missing")
+	}
+	root := n.ResolvePath(name)
+	switch {
+	case diff == "":
+		diff = filepath.Join(root, "diff")
+	case !filepath.IsAbs(diff):
+		diff = n.ResolvePath(diff)
+	}
+	db, err = leveldb.New(diff, 0, handles, namespace, readonly)
+
 	return db, err
 }
 

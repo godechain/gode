@@ -25,7 +25,6 @@ import (
 	"math"
 	"math/big"
 	"os"
-	"path/filepath"
 	godebug "runtime/debug"
 	"strconv"
 	"strings"
@@ -33,13 +32,16 @@ import (
 	"text/template"
 	"time"
 
+	pcsclite "github.com/gballet/go-libpcsclite"
+	gopsutil "github.com/shirou/gopsutil/mem"
+	"gopkg.in/urfave/cli.v1"
+
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/clique"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/vm"
@@ -65,10 +67,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/nat"
 	"github.com/ethereum/go-ethereum/p2p/netutil"
-	"github.com/ethereum/go-ethereum/params"
-	pcsclite "github.com/gballet/go-libpcsclite"
-	gopsutil "github.com/shirou/gopsutil/mem"
-	"gopkg.in/urfave/cli.v1"
 )
 
 func init() {
@@ -96,7 +94,7 @@ func printHelp(out io.Writer, templ string, data interface{}) {
 	if err != nil {
 		panic(err)
 	}
-	w.Flush()
+	_ = w.Flush()
 }
 
 // These are all the command line flags we support.
@@ -107,15 +105,47 @@ func printHelp(out io.Writer, templ string, data interface{}) {
 // are the same for all commands.
 
 var (
+	// Genesis settings
+	GenesisFlag = cli.StringFlag{
+		Name:  "genesis",
+		Usage: "Path to genesis JSON file",
+		Value: "./genesis/devnet.json",
+	}
+
 	// General settings
 	DataDirFlag = DirectoryFlag{
 		Name:  "datadir",
 		Usage: "Data directory for the databases and keystore",
 		Value: DirectoryString(node.DefaultDataDir()),
 	}
+	DirectBroadcastFlag = cli.BoolFlag{
+		Name:  "directbroadcast",
+		Usage: "Enable directly broadcast mined block to all peers",
+	}
+	DisableSnapProtocolFlag = cli.BoolFlag{
+		Name:  "disablesnapprotocol",
+		Usage: "Disable snap protocol",
+	}
+	DiffSyncFlag = cli.BoolFlag{
+		Name: "diffsync",
+		Usage: "Enable diffy sync, Please note that enable diffsync will improve the syncing speed, " +
+			"but will degrade the security to light client level",
+	}
+	PipeCommitFlag = cli.BoolFlag{
+		Name:  "pipecommit",
+		Usage: "Enable MPT pipeline commit, it will improve syncing performance. It is an experimental feature(default is false)",
+	}
+	RangeLimitFlag = cli.BoolFlag{
+		Name:  "rangelimit",
+		Usage: "Enable 5000 blocks limit for range query",
+	}
 	AncientFlag = DirectoryFlag{
 		Name:  "datadir.ancient",
 		Usage: "Data directory for ancient chain segments (default = inside chaindata)",
+	}
+	DiffFlag = DirectoryFlag{
+		Name:  "datadir.diff",
+		Usage: "Data directory for difflayer segments (default = inside chaindata)",
 	}
 	MinFreeDiskSpaceFlag = DirectoryFlag{
 		Name:  "datadir.minfreedisk",
@@ -124,6 +154,10 @@ var (
 	KeyStoreDirFlag = DirectoryFlag{
 		Name:  "keystore",
 		Usage: "Directory for the keystore (default = inside the datadir)",
+	}
+	NoUSBFlag = cli.BoolFlag{
+		Name:  "nousb",
+		Usage: "Disables monitoring for and managing USB hardware wallets (deprecated)",
 	}
 	USBFlag = cli.BoolFlag{
 		Name:  "usb",
@@ -138,30 +172,6 @@ var (
 		Name:  "networkid",
 		Usage: "Explicitly set network id (integer)(For testnets: use --ropsten, --rinkeby, --goerli instead)",
 		Value: ethconfig.Defaults.NetworkId,
-	}
-	MainnetFlag = cli.BoolFlag{
-		Name:  "mainnet",
-		Usage: "Ethereum mainnet",
-	}
-	GoerliFlag = cli.BoolFlag{
-		Name:  "goerli",
-		Usage: "Görli network: pre-configured proof-of-authority test network",
-	}
-	RinkebyFlag = cli.BoolFlag{
-		Name:  "rinkeby",
-		Usage: "Rinkeby network: pre-configured proof-of-authority test network",
-	}
-	RopstenFlag = cli.BoolFlag{
-		Name:  "ropsten",
-		Usage: "Ropsten network: pre-configured proof-of-work test network",
-	}
-	MumbaiFlag = cli.BoolFlag{
-		Name:  "bor-mumbai",
-		Usage: "Mumbai network: pre-configured proof-of-stake test network",
-	}
-	BorMainnetFlag = cli.BoolFlag{
-		Name:  "bor-mainnet",
-		Usage: "Bor mainnet",
 	}
 	DeveloperFlag = cli.BoolFlag{
 		Name:  "dev",
@@ -184,7 +194,7 @@ var (
 		Name:  "exitwhensynced",
 		Usage: "Exits after block synchronisation completes",
 	}
-	IterativeOutputFlag = cli.BoolTFlag{
+	IterativeOutputFlag = cli.BoolFlag{
 		Name:  "iterative",
 		Usage: "Print streaming JSON iteratively, delimited by newlines",
 	}
@@ -199,16 +209,6 @@ var (
 	ExcludeCodeFlag = cli.BoolFlag{
 		Name:  "nocode",
 		Usage: "Exclude contract code (save db lookups)",
-	}
-	StartKeyFlag = cli.StringFlag{
-		Name:  "start",
-		Usage: "Start position. Either a hash or address",
-		Value: "0x0000000000000000000000000000000000000000000000000000000000000000",
-	}
-	DumpLimitFlag = cli.Uint64Flag{
-		Name:  "limit",
-		Usage: "Max number of elements (0 = no limit)",
-		Value: 0,
 	}
 	defaultSyncMode = ethconfig.Defaults.SyncMode
 	SyncModeFlag    = TextMarshalerFlag{
@@ -227,7 +227,7 @@ var (
 	}
 	TxLookupLimitFlag = cli.Uint64Flag{
 		Name:  "txlookuplimit",
-		Usage: "Number of recent blocks to maintain transactions index for (default = about 56 days, 0 = entire chain)",
+		Usage: "Number of recent blocks to maintain transactions index for (default = about one year, 0 = entire chain)",
 		Value: ethconfig.Defaults.TxLookupLimit,
 	}
 	LightKDFFlag = cli.BoolFlag{
@@ -243,9 +243,14 @@ var (
 		Usage: "Megabytes of memory allocated to bloom-filter for pruning",
 		Value: 2048,
 	}
-	OverrideLondonFlag = cli.Uint64Flag{
-		Name:  "override.london",
-		Usage: "Manually specify London fork-block, overriding the bundled setting",
+	TriesInMemoryFlag = cli.Uint64Flag{
+		Name:  "triesInMemory",
+		Usage: "The layer of tries trees that keep in memory",
+		Value: 128,
+	}
+	OverrideBerlinFlag = cli.Uint64Flag{
+		Name:  "override.berlin",
+		Usage: "Manually specify Berlin fork-block, overriding the bundled setting",
 	}
 	// Light server and client settings
 	LightServeFlag = cli.IntFlag{
@@ -289,44 +294,6 @@ var (
 	LightNoSyncServeFlag = cli.BoolFlag{
 		Name:  "light.nosyncserve",
 		Usage: "Enables serving light clients before syncing",
-	}
-	// Ethash settings
-	EthashCacheDirFlag = DirectoryFlag{
-		Name:  "ethash.cachedir",
-		Usage: "Directory to store the ethash verification caches (default = inside the datadir)",
-	}
-	EthashCachesInMemoryFlag = cli.IntFlag{
-		Name:  "ethash.cachesinmem",
-		Usage: "Number of recent ethash caches to keep in memory (16MB each)",
-		Value: ethconfig.Defaults.Ethash.CachesInMem,
-	}
-	EthashCachesOnDiskFlag = cli.IntFlag{
-		Name:  "ethash.cachesondisk",
-		Usage: "Number of recent ethash caches to keep on disk (16MB each)",
-		Value: ethconfig.Defaults.Ethash.CachesOnDisk,
-	}
-	EthashCachesLockMmapFlag = cli.BoolFlag{
-		Name:  "ethash.cacheslockmmap",
-		Usage: "Lock memory maps of recent ethash caches",
-	}
-	EthashDatasetDirFlag = DirectoryFlag{
-		Name:  "ethash.dagdir",
-		Usage: "Directory to store the ethash mining DAGs",
-		Value: DirectoryString(ethconfig.Defaults.Ethash.DatasetDir),
-	}
-	EthashDatasetsInMemoryFlag = cli.IntFlag{
-		Name:  "ethash.dagsinmem",
-		Usage: "Number of recent ethash mining DAGs to keep in memory (1+GB each)",
-		Value: ethconfig.Defaults.Ethash.DatasetsInMem,
-	}
-	EthashDatasetsOnDiskFlag = cli.IntFlag{
-		Name:  "ethash.dagsondisk",
-		Usage: "Number of recent ethash mining DAGs to keep on disk (1+GB each)",
-		Value: ethconfig.Defaults.Ethash.DatasetsOnDisk,
-	}
-	EthashDatasetsLockMmapFlag = cli.BoolFlag{
-		Name:  "ethash.dagslockmmap",
-		Usage: "Lock memory maps for recent ethash mining DAGs",
 	}
 	// Transaction pool settings
 	TxPoolLocalsFlag = cli.StringFlag{
@@ -382,11 +349,16 @@ var (
 		Usage: "Maximum amount of time non-executable transaction are queued",
 		Value: ethconfig.Defaults.TxPool.Lifetime,
 	}
-	// Performance tuning settings
-	BorLogsFlag = cli.BoolFlag{
-		Name:  "bor.logs",
-		Usage: "Enable bor logs retrieval",
+	TxPoolReannounceTimeFlag = cli.DurationFlag{
+		Name:  "txpool.reannouncetime",
+		Usage: "Duration for announcing local pending transactions again (default = 10 years, minimum = 1 minute)",
+		Value: ethconfig.Defaults.TxPool.ReannounceTime,
 	}
+	TxPoolGasFreeContracts = cli.StringSliceFlag{
+		Name:  "txpool.gasfreecontracts",
+		Usage: "List with gas free recipients",
+	}
+	// Performance tuning settings
 	CacheFlag = cli.IntFlag{
 		Name:  "cache",
 		Usage: "Megabytes of memory allocated to internal caching (default = 4096 mainnet full node, 128 light mode)",
@@ -395,7 +367,7 @@ var (
 	CacheDatabaseFlag = cli.IntFlag{
 		Name:  "cache.database",
 		Usage: "Percentage of cache memory allowance to use for database io",
-		Value: 50,
+		Value: 40,
 	}
 	CacheTrieFlag = cli.IntFlag{
 		Name:  "cache.trie",
@@ -419,16 +391,21 @@ var (
 	}
 	CacheSnapshotFlag = cli.IntFlag{
 		Name:  "cache.snapshot",
-		Usage: "Percentage of cache memory allowance to use for snapshot caching (default = 10% full mode, 20% archive mode)",
-		Value: 10,
-	}
-	CacheNoPrefetchFlag = cli.BoolFlag{
-		Name:  "cache.noprefetch",
-		Usage: "Disable heuristic state prefetch during block import (less CPU and disk IO, more time waiting for data)",
+		Usage: "Percentage of cache memory allowance to use for snapshot caching (default = 20%)",
+		Value: 20,
 	}
 	CachePreimagesFlag = cli.BoolFlag{
 		Name:  "cache.preimages",
 		Usage: "Enable recording the SHA3/keccak preimages of trie keys",
+	}
+	PersistDiffFlag = cli.BoolFlag{
+		Name:  "persistdiff",
+		Usage: "Enable persistence of the diff layer",
+	}
+	DiffBlockFlag = cli.Uint64Flag{
+		Name:  "diffblock",
+		Usage: "The number of blocks should be persisted in db (default = 86400)",
+		Value: uint64(86400),
 	}
 	// Miner settings
 	MiningEnabledFlag = cli.BoolFlag{
@@ -447,6 +424,11 @@ var (
 	MinerNotifyFullFlag = cli.BoolFlag{
 		Name:  "miner.notify.full",
 		Usage: "Notify with pending block headers instead of work packages",
+	}
+	MinerGasTargetFlag = cli.Uint64Flag{
+		Name:  "miner.gastarget",
+		Usage: "Target gas floor for mined blocks",
+		Value: ethconfig.Defaults.Miner.GasFloor,
 	}
 	MinerGasLimitFlag = cli.Uint64Flag{
 		Name:  "miner.gaslimit",
@@ -472,12 +454,18 @@ var (
 		Usage: "Time interval to recreate the block being mined",
 		Value: ethconfig.Defaults.Miner.Recommit,
 	}
-	MinerNoVerifyFlag = cli.BoolFlag{
+	MinerDelayLeftoverFlag = cli.DurationFlag{
+		Name:  "miner.delayleftover",
+		Usage: "Time interval to for broadcast block",
+		Value: ethconfig.Defaults.Miner.DelayLeftOver,
+	}
+	MinerNoVerfiyFlag = cli.BoolFlag{
 		Name:  "miner.noverify",
 		Usage: "Disable remote sealing verification",
 	}
 	// Account settings
 	UnlockedAccountFlag = cli.StringFlag{
+
 		Name:  "unlock",
 		Usage: "Comma separated list of accounts to unlock",
 		Value: "",
@@ -504,11 +492,6 @@ var (
 		Name:  "rpc.gascap",
 		Usage: "Sets a cap on gas that can be used in eth_call/estimateGas (0=infinite)",
 		Value: ethconfig.Defaults.RPCGasCap,
-	}
-	RPCGlobalEVMTimeoutFlag = cli.DurationFlag{
-		Name:  "rpc.evmtimeout",
-		Usage: "Sets a timeout used for eth_call (0=infinite)",
-		Value: ethconfig.Defaults.RPCEVMTimeout,
 	}
 	RPCGlobalTxFeeCapFlag = cli.Float64Flag{
 		Name:  "rpc.txfeecap",
@@ -679,10 +662,10 @@ var (
 	}
 
 	// ATM the url is left to the user and deployment to
-	JSpathFlag = DirectoryFlag{
+	JSpathFlag = cli.StringFlag{
 		Name:  "jspath",
 		Usage: "JavaScript root path for `loadScript`",
-		Value: DirectoryString("."),
+		Value: ".",
 	}
 
 	// Gas price oracle settings
@@ -700,11 +683,6 @@ var (
 		Name:  "gpo.maxprice",
 		Usage: "Maximum gas price will be recommended by gpo",
 		Value: ethconfig.Defaults.GPO.MaxPrice.Int64(),
-	}
-	GpoIgnoreGasPriceFlag = cli.Int64Flag{
-		Name:  "gpo.ignoreprice",
-		Usage: "Gas price below which gpo will ignore transactions",
-		Value: ethconfig.Defaults.GPO.IgnorePrice.Int64(),
 	}
 
 	// Metrics flags
@@ -764,33 +742,55 @@ var (
 		Usage: "Comma-separated InfluxDB tags (key/values) attached to all measurements",
 		Value: metrics.DefaultConfig.InfluxDBTags,
 	}
-
-	MetricsEnableInfluxDBV2Flag = cli.BoolFlag{
-		Name:  "metrics.influxdbv2",
-		Usage: "Enable metrics export/push to an external InfluxDB v2 database",
+	EWASMInterpreterFlag = cli.StringFlag{
+		Name:  "vm.ewasm",
+		Usage: "External ewasm configuration (default = built-in interpreter)",
+		Value: "",
+	}
+	EVMInterpreterFlag = cli.StringFlag{
+		Name:  "vm.evm",
+		Usage: "External EVM configuration (default = built-in interpreter)",
+		Value: "",
 	}
 
-	MetricsInfluxDBTokenFlag = cli.StringFlag{
-		Name:  "metrics.influxdb.token",
-		Usage: "Token to authorize access to the database (v2 only)",
-		Value: metrics.DefaultConfig.InfluxDBToken,
+	// Init network
+	InitNetworkSize = cli.IntFlag{
+		Name:  "init.size",
+		Usage: "the size of the network",
+		Value: 1,
 	}
 
-	MetricsInfluxDBBucketFlag = cli.StringFlag{
-		Name:  "metrics.influxdb.bucket",
-		Usage: "InfluxDB bucket name to push reported metrics to (v2 only)",
-		Value: metrics.DefaultConfig.InfluxDBBucket,
+	InitNetworkDir = cli.StringFlag{
+		Name:  "init.dir",
+		Usage: "the direction to store initial network data",
+		Value: "",
 	}
 
-	MetricsInfluxDBOrganizationFlag = cli.StringFlag{
-		Name:  "metrics.influxdb.organization",
-		Usage: "InfluxDB organization name (v2 only)",
-		Value: metrics.DefaultConfig.InfluxDBOrganization,
+	InitNetworkIps = cli.StringFlag{
+		Name:  "init.ips",
+		Usage: "the ips of each node in the network, example '192.168.0.1,192.168.0.2'",
+		Value: "",
+	}
+
+	InitNetworkPort = cli.IntFlag{
+		Name:  "init.p2p-port",
+		Usage: "the p2p port of the nodes in the network",
+		Value: 30311,
 	}
 
 	CatalystFlag = cli.BoolFlag{
 		Name:  "catalyst",
 		Usage: "Catalyst mode (eth2 integration testing)",
+	}
+
+	BlockAmountReserved = cli.Uint64Flag{
+		Name:  "block-amount-reserved",
+		Usage: "Sets the expected remained amount of blocks for offline block prune",
+	}
+
+	CheckSnapshotWithMPT = cli.BoolFlag{
+		Name:  "check-snapshot-with-mpt",
+		Usage: "Enable checking between snapshot and MPT ",
 	}
 )
 
@@ -799,21 +799,6 @@ var (
 // then a subdirectory of the specified datadir will be used.
 func MakeDataDir(ctx *cli.Context) string {
 	if path := ctx.GlobalString(DataDirFlag.Name); path != "" {
-		if ctx.GlobalBool(RopstenFlag.Name) {
-			// Maintain compatibility with older Geth configurations storing the
-			// Ropsten database in `testnet` instead of `ropsten`.
-			return filepath.Join(path, "ropsten")
-		}
-		if ctx.GlobalBool(RinkebyFlag.Name) {
-			return filepath.Join(path, "rinkeby")
-		}
-		if ctx.GlobalBool(GoerliFlag.Name) {
-			return filepath.Join(path, "goerli")
-		}
-		if ctx.GlobalBool(MumbaiFlag.Name) || ctx.GlobalBool(BorMainnetFlag.Name) {
-			homeDir, _ := os.UserHomeDir()
-			return filepath.Join(homeDir, "/.bor/data")
-		}
 		return path
 	}
 	Fatalf("Cannot determine default data directory, please set manually (--datadir)")
@@ -856,33 +841,17 @@ func setNodeUserIdent(ctx *cli.Context, cfg *node.Config) {
 // setBootstrapNodes creates a list of bootstrap nodes from the command line
 // flags, reverting to pre-configured ones if none have been specified.
 func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
-	urls := params.MainnetBootnodes
-	switch {
-	case ctx.GlobalIsSet(BootnodesFlag.Name):
-		urls = SplitAndTrim(ctx.GlobalString(BootnodesFlag.Name))
-	case ctx.GlobalBool(RopstenFlag.Name):
-		urls = params.RopstenBootnodes
-	case ctx.GlobalBool(RinkebyFlag.Name):
-		urls = params.RinkebyBootnodes
-	case ctx.GlobalBool(GoerliFlag.Name):
-		urls = params.GoerliBootnodes
-	case ctx.GlobalBool(MumbaiFlag.Name):
-		urls = params.MumbaiBootnodes
-	case ctx.GlobalBool(BorMainnetFlag.Name):
-		urls = params.BorMainnetBootnodes
-	case cfg.BootstrapNodes != nil:
-		return // already set, don't apply defaults.
-	}
+	urls := SplitAndTrim(ctx.GlobalString(BootnodesFlag.Name))
 
 	cfg.BootstrapNodes = make([]*enode.Node, 0, len(urls))
 	for _, url := range urls {
 		if url != "" {
-			node, err := enode.Parse(enode.ValidSchemes, url)
+			n, err := enode.Parse(enode.ValidSchemes, url)
 			if err != nil {
 				log.Crit("Bootstrap URL invalid", "enode", url, "err", err)
 				continue
 			}
-			cfg.BootstrapNodes = append(cfg.BootstrapNodes, node)
+			cfg.BootstrapNodes = append(cfg.BootstrapNodes, n)
 		}
 	}
 }
@@ -890,23 +859,17 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 // setBootstrapNodesV5 creates a list of bootstrap nodes from the command line
 // flags, reverting to pre-configured ones if none have been specified.
 func setBootstrapNodesV5(ctx *cli.Context, cfg *p2p.Config) {
-	urls := params.V5Bootnodes
-	switch {
-	case ctx.GlobalIsSet(BootnodesFlag.Name):
-		urls = SplitAndTrim(ctx.GlobalString(BootnodesFlag.Name))
-	case cfg.BootstrapNodesV5 != nil:
-		return // already set, don't apply defaults.
-	}
+	urls := SplitAndTrim(ctx.GlobalString(BootnodesFlag.Name))
 
 	cfg.BootstrapNodesV5 = make([]*enode.Node, 0, len(urls))
 	for _, url := range urls {
 		if url != "" {
-			node, err := enode.Parse(enode.ValidSchemes, url)
+			n, err := enode.Parse(enode.ValidSchemes, url)
 			if err != nil {
 				log.Error("Bootstrap URL invalid", "enode", url, "err", err)
 				continue
 			}
-			cfg.BootstrapNodesV5 = append(cfg.BootstrapNodesV5, node)
+			cfg.BootstrapNodesV5 = append(cfg.BootstrapNodesV5, n)
 		}
 	}
 }
@@ -945,6 +908,14 @@ func SplitAndTrim(input string) (ret []string) {
 // setHTTP creates the HTTP RPC listener interface string from the set
 // command line flags, returning empty if the HTTP endpoint is disabled.
 func setHTTP(ctx *cli.Context, cfg *node.Config) {
+	if ctx.GlobalBool(LegacyRPCEnabledFlag.Name) && cfg.HTTPHost == "" {
+		log.Warn("The flag --rpc is deprecated and will be removed June 2021, please use --http")
+		cfg.HTTPHost = "127.0.0.1"
+		if ctx.GlobalIsSet(LegacyRPCListenAddrFlag.Name) {
+			cfg.HTTPHost = ctx.GlobalString(LegacyRPCListenAddrFlag.Name)
+			log.Warn("The flag --rpcaddr is deprecated and will be removed June 2021, please use --http.addr")
+		}
+	}
 	if ctx.GlobalBool(HTTPEnabledFlag.Name) && cfg.HTTPHost == "" {
 		cfg.HTTPHost = "127.0.0.1"
 		if ctx.GlobalIsSet(HTTPListenAddrFlag.Name) {
@@ -952,18 +923,34 @@ func setHTTP(ctx *cli.Context, cfg *node.Config) {
 		}
 	}
 
+	if ctx.GlobalIsSet(LegacyRPCPortFlag.Name) {
+		cfg.HTTPPort = ctx.GlobalInt(LegacyRPCPortFlag.Name)
+		log.Warn("The flag --rpcport is deprecated and will be removed June 2021, please use --http.port")
+	}
 	if ctx.GlobalIsSet(HTTPPortFlag.Name) {
 		cfg.HTTPPort = ctx.GlobalInt(HTTPPortFlag.Name)
 	}
 
+	if ctx.GlobalIsSet(LegacyRPCCORSDomainFlag.Name) {
+		cfg.HTTPCors = SplitAndTrim(ctx.GlobalString(LegacyRPCCORSDomainFlag.Name))
+		log.Warn("The flag --rpccorsdomain is deprecated and will be removed June 2021, please use --http.corsdomain")
+	}
 	if ctx.GlobalIsSet(HTTPCORSDomainFlag.Name) {
 		cfg.HTTPCors = SplitAndTrim(ctx.GlobalString(HTTPCORSDomainFlag.Name))
 	}
 
+	if ctx.GlobalIsSet(LegacyRPCApiFlag.Name) {
+		cfg.HTTPModules = SplitAndTrim(ctx.GlobalString(LegacyRPCApiFlag.Name))
+		log.Warn("The flag --rpcapi is deprecated and will be removed June 2021, please use --http.api")
+	}
 	if ctx.GlobalIsSet(HTTPApiFlag.Name) {
 		cfg.HTTPModules = SplitAndTrim(ctx.GlobalString(HTTPApiFlag.Name))
 	}
 
+	if ctx.GlobalIsSet(LegacyRPCVirtualHostsFlag.Name) {
+		cfg.HTTPVirtualHosts = SplitAndTrim(ctx.GlobalString(LegacyRPCVirtualHostsFlag.Name))
+		log.Warn("The flag --rpcvhosts is deprecated and will be removed June 2021, please use --http.vhosts")
+	}
 	if ctx.GlobalIsSet(HTTPVirtualHostsFlag.Name) {
 		cfg.HTTPVirtualHosts = SplitAndTrim(ctx.GlobalString(HTTPVirtualHostsFlag.Name))
 	}
@@ -1230,9 +1217,6 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	if ctx.GlobalIsSet(KeyStoreDirFlag.Name) {
 		cfg.KeyStoreDir = ctx.GlobalString(KeyStoreDirFlag.Name)
 	}
-	if ctx.GlobalIsSet(DeveloperFlag.Name) {
-		cfg.UseLightweightKDF = true
-	}
 	if ctx.GlobalIsSet(LightKDFFlag.Name) {
 		cfg.UseLightweightKDF = ctx.GlobalBool(LightKDFFlag.Name)
 	}
@@ -1241,6 +1225,15 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	}
 	if ctx.GlobalIsSet(USBFlag.Name) {
 		cfg.USB = ctx.GlobalBool(USBFlag.Name)
+	}
+	if ctx.GlobalIsSet(DirectBroadcastFlag.Name) {
+		cfg.DirectBroadcast = ctx.GlobalBool(DirectBroadcastFlag.Name)
+	}
+	if ctx.GlobalIsSet(DisableSnapProtocolFlag.Name) {
+		cfg.DisableSnapProtocol = ctx.GlobalBool(DisableSnapProtocolFlag.Name)
+	}
+	if ctx.GlobalIsSet(RangeLimitFlag.Name) {
+		cfg.RangeLimit = ctx.GlobalBool(RangeLimitFlag.Name)
 	}
 	if ctx.GlobalIsSet(InsecureUnlockAllowedFlag.Name) {
 		cfg.InsecureUnlockAllowed = ctx.GlobalBool(InsecureUnlockAllowedFlag.Name)
@@ -1273,28 +1266,6 @@ func setDataDir(ctx *cli.Context, cfg *node.Config) {
 		cfg.DataDir = ctx.GlobalString(DataDirFlag.Name)
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		cfg.DataDir = "" // unless explicitly requested, use memory databases
-	case ctx.GlobalBool(RopstenFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		// Maintain compatibility with older Geth configurations storing the
-		// Ropsten database in `testnet` instead of `ropsten`.
-		legacyPath := filepath.Join(node.DefaultDataDir(), "testnet")
-		if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
-			log.Warn("Using the deprecated `testnet` datadir. Future versions will store the Ropsten chain in `ropsten`.")
-			cfg.DataDir = legacyPath
-		} else {
-			cfg.DataDir = filepath.Join(node.DefaultDataDir(), "ropsten")
-		}
-
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "ropsten")
-	case ctx.GlobalBool(RinkebyFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "rinkeby")
-	case ctx.GlobalBool(GoerliFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "goerli")
-	case ctx.GlobalBool(MumbaiFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		homeDir, _ := os.UserHomeDir()
-		cfg.DataDir = filepath.Join(homeDir, "/.bor/data")
-	case ctx.GlobalBool(BorMainnetFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		homeDir, _ := os.UserHomeDir()
-		cfg.DataDir = filepath.Join(homeDir, "/.bor/data")
 	}
 }
 
@@ -1302,7 +1273,8 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config, light bool) {
 	// If we are running the light client, apply another group
 	// settings for gas oracle.
 	if light {
-		*cfg = ethconfig.LightClientGPO
+		cfg.Blocks = ethconfig.LightClientGPO.Blocks
+		cfg.Percentile = ethconfig.LightClientGPO.Percentile
 	}
 	if ctx.GlobalIsSet(GpoBlocksFlag.Name) {
 		cfg.Blocks = ctx.GlobalInt(GpoBlocksFlag.Name)
@@ -1312,9 +1284,6 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config, light bool) {
 	}
 	if ctx.GlobalIsSet(GpoMaxGasPriceFlag.Name) {
 		cfg.MaxPrice = big.NewInt(ctx.GlobalInt64(GpoMaxGasPriceFlag.Name))
-	}
-	if ctx.GlobalIsSet(GpoIgnoreGasPriceFlag.Name) {
-		cfg.IgnorePrice = big.NewInt(ctx.GlobalInt64(GpoIgnoreGasPriceFlag.Name))
 	}
 }
 
@@ -1359,32 +1328,21 @@ func setTxPool(ctx *cli.Context, cfg *core.TxPoolConfig) {
 	if ctx.GlobalIsSet(TxPoolLifetimeFlag.Name) {
 		cfg.Lifetime = ctx.GlobalDuration(TxPoolLifetimeFlag.Name)
 	}
-}
-
-func setEthash(ctx *cli.Context, cfg *ethconfig.Config) {
-	if ctx.GlobalIsSet(EthashCacheDirFlag.Name) {
-		cfg.Ethash.CacheDir = ctx.GlobalString(EthashCacheDirFlag.Name)
+	if ctx.GlobalIsSet(TxPoolReannounceTimeFlag.Name) {
+		cfg.ReannounceTime = ctx.GlobalDuration(TxPoolReannounceTimeFlag.Name)
 	}
-	if ctx.GlobalIsSet(EthashDatasetDirFlag.Name) {
-		cfg.Ethash.DatasetDir = ctx.GlobalString(EthashDatasetDirFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashCachesInMemoryFlag.Name) {
-		cfg.Ethash.CachesInMem = ctx.GlobalInt(EthashCachesInMemoryFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashCachesOnDiskFlag.Name) {
-		cfg.Ethash.CachesOnDisk = ctx.GlobalInt(EthashCachesOnDiskFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashCachesLockMmapFlag.Name) {
-		cfg.Ethash.CachesLockMmap = ctx.GlobalBool(EthashCachesLockMmapFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashDatasetsInMemoryFlag.Name) {
-		cfg.Ethash.DatasetsInMem = ctx.GlobalInt(EthashDatasetsInMemoryFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashDatasetsOnDiskFlag.Name) {
-		cfg.Ethash.DatasetsOnDisk = ctx.GlobalInt(EthashDatasetsOnDiskFlag.Name)
-	}
-	if ctx.GlobalIsSet(EthashDatasetsLockMmapFlag.Name) {
-		cfg.Ethash.DatasetsLockMmap = ctx.GlobalBool(EthashDatasetsLockMmapFlag.Name)
+	if ctx.GlobalIsSet(TxPoolGasFreeContracts.Name) {
+		cfg.GasFreeContracts = make(map[common.Address]bool)
+		for _, rawAddress := range ctx.GlobalStringSlice(TxPoolGasFreeContracts.Name) {
+			if !common.IsHexAddress(rawAddress) {
+				Fatalf("Unable to parse address for the [%s], failed on address (%s)", TxPoolGasFreeContracts.Name, rawAddress)
+			}
+			address := common.HexToAddress(rawAddress)
+			if address == (common.Address{}) {
+				Fatalf("Unable to parse address for the [%s], failed on address (%s)", TxPoolGasFreeContracts.Name, rawAddress)
+			}
+			cfg.GasFreeContracts[address] = true
+		}
 	}
 }
 
@@ -1396,6 +1354,9 @@ func setMiner(ctx *cli.Context, cfg *miner.Config) {
 	if ctx.GlobalIsSet(MinerExtraDataFlag.Name) {
 		cfg.ExtraData = []byte(ctx.GlobalString(MinerExtraDataFlag.Name))
 	}
+	if ctx.GlobalIsSet(MinerGasTargetFlag.Name) {
+		cfg.GasFloor = ctx.GlobalUint64(MinerGasTargetFlag.Name)
+	}
 	if ctx.GlobalIsSet(MinerGasLimitFlag.Name) {
 		cfg.GasCeil = ctx.GlobalUint64(MinerGasLimitFlag.Name)
 	}
@@ -1405,11 +1366,11 @@ func setMiner(ctx *cli.Context, cfg *miner.Config) {
 	if ctx.GlobalIsSet(MinerRecommitIntervalFlag.Name) {
 		cfg.Recommit = ctx.GlobalDuration(MinerRecommitIntervalFlag.Name)
 	}
-	if ctx.GlobalIsSet(MinerNoVerifyFlag.Name) {
-		cfg.Noverify = ctx.GlobalBool(MinerNoVerifyFlag.Name)
+	if ctx.GlobalIsSet(MinerDelayLeftoverFlag.Name) {
+		cfg.DelayLeftOver = ctx.Duration(MinerDelayLeftoverFlag.Name)
 	}
-	if ctx.GlobalIsSet(LegacyMinerGasTargetFlag.Name) {
-		log.Warn("The generic --miner.gastarget flag is deprecated and will be removed in the future!")
+	if ctx.GlobalIsSet(MinerNoVerfiyFlag.Name) {
+		cfg.Noverify = ctx.GlobalBool(MinerNoVerfiyFlag.Name)
 	}
 }
 
@@ -1480,7 +1441,7 @@ func CheckExclusive(ctx *cli.Context, args ...interface{}) {
 // SetEthConfig applies eth-related command line flags to the config.
 func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	// Avoid conflicting network flags
-	CheckExclusive(ctx, MainnetFlag, DeveloperFlag, RopstenFlag, RinkebyFlag, GoerliFlag, MumbaiFlag, BorMainnetFlag)
+	CheckExclusive(ctx, DeveloperFlag)
 	CheckExclusive(ctx, LightServeFlag, SyncModeFlag, "light")
 	CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
 	if ctx.GlobalString(GCModeFlag.Name) == "archive" && ctx.GlobalUint64(TxLookupLimitFlag.Name) != 0 {
@@ -1497,14 +1458,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	setEtherbase(ctx, ks, cfg)
 	setGPO(ctx, &cfg.GPO, ctx.GlobalString(SyncModeFlag.Name) == "light")
 	setTxPool(ctx, &cfg.TxPool)
-	setEthash(ctx, cfg)
 	setMiner(ctx, &cfg.Miner)
 	setWhitelist(ctx, cfg)
 	setLes(ctx, cfg)
-
-	if ctx.GlobalIsSet(BorLogsFlag.Name) {
-		cfg.BorLogs = ctx.GlobalBool(BorLogsFlag.Name)
-	}
 
 	// Cap the cache allowance and tune the garbage collector
 	mem, err := gopsutil.VirtualMemory()
@@ -1539,15 +1495,35 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.GlobalIsSet(AncientFlag.Name) {
 		cfg.DatabaseFreezer = ctx.GlobalString(AncientFlag.Name)
 	}
-
+	if ctx.GlobalIsSet(DiffFlag.Name) {
+		cfg.DatabaseDiff = ctx.GlobalString(DiffFlag.Name)
+	}
+	if ctx.GlobalIsSet(PersistDiffFlag.Name) {
+		cfg.PersistDiff = ctx.GlobalBool(PersistDiffFlag.Name)
+	}
+	if ctx.GlobalIsSet(DiffBlockFlag.Name) {
+		cfg.DiffBlock = ctx.GlobalUint64(DiffBlockFlag.Name)
+	}
 	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
 	if ctx.GlobalIsSet(GCModeFlag.Name) {
 		cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
 	}
-	if ctx.GlobalIsSet(CacheNoPrefetchFlag.Name) {
-		cfg.NoPrefetch = ctx.GlobalBool(CacheNoPrefetchFlag.Name)
+	if ctx.GlobalIsSet(DirectBroadcastFlag.Name) {
+		cfg.DirectBroadcast = ctx.GlobalBool(DirectBroadcastFlag.Name)
+	}
+	if ctx.GlobalIsSet(DisableSnapProtocolFlag.Name) {
+		cfg.DisableSnapProtocol = ctx.GlobalBool(DisableSnapProtocolFlag.Name)
+	}
+	if ctx.GlobalIsSet(DiffSyncFlag.Name) {
+		cfg.DiffSync = ctx.GlobalBool(DiffSyncFlag.Name)
+	}
+	if ctx.GlobalIsSet(PipeCommitFlag.Name) {
+		cfg.PipeCommit = ctx.GlobalBool(PipeCommitFlag.Name)
+	}
+	if ctx.GlobalIsSet(RangeLimitFlag.Name) {
+		cfg.RangeLimit = ctx.GlobalBool(RangeLimitFlag.Name)
 	}
 	// Read the value from the flag no matter if it's set or not.
 	cfg.Preimages = ctx.GlobalBool(CachePreimagesFlag.Name)
@@ -1570,6 +1546,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheGCFlag.Name) {
 		cfg.TrieDirtyCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheGCFlag.Name) / 100
 	}
+	if ctx.GlobalIsSet(TriesInMemoryFlag.Name) {
+		cfg.TriesInMemory = ctx.GlobalUint64(TriesInMemoryFlag.Name)
+	}
 	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheSnapshotFlag.Name) {
 		cfg.SnapshotCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheSnapshotFlag.Name) / 100
 	}
@@ -1590,6 +1569,13 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		cfg.EnablePreimageRecording = ctx.GlobalBool(VMEnableDebugFlag.Name)
 	}
 
+	if ctx.GlobalIsSet(EWASMInterpreterFlag.Name) {
+		cfg.EWASMInterpreter = ctx.GlobalString(EWASMInterpreterFlag.Name)
+	}
+
+	if ctx.GlobalIsSet(EVMInterpreterFlag.Name) {
+		cfg.EVMInterpreter = ctx.GlobalString(EVMInterpreterFlag.Name)
+	}
 	if ctx.GlobalIsSet(RPCGlobalGasCapFlag.Name) {
 		cfg.RPCGasCap = ctx.GlobalUint64(RPCGlobalGasCapFlag.Name)
 	}
@@ -1597,9 +1583,6 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		log.Info("Set global gas cap", "cap", cfg.RPCGasCap)
 	} else {
 		log.Info("Global gas cap disabled")
-	}
-	if ctx.GlobalIsSet(RPCGlobalEVMTimeoutFlag.Name) {
-		cfg.RPCEVMTimeout = ctx.GlobalDuration(RPCGlobalEVMTimeoutFlag.Name)
 	}
 	if ctx.GlobalIsSet(RPCGlobalTxFeeCapFlag.Name) {
 		cfg.RPCTxFeeCap = ctx.GlobalFloat64(RPCGlobalTxFeeCapFlag.Name)
@@ -1616,47 +1599,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	}
 	// Override any default configs for hard coded networks.
 	switch {
-	case ctx.GlobalBool(MainnetFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 1
-		}
-		cfg.Genesis = core.DefaultGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.MainnetGenesisHash)
-	case ctx.GlobalBool(RopstenFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 3
-		}
-		cfg.Genesis = core.DefaultRopstenGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.RopstenGenesisHash)
-	case ctx.GlobalBool(RinkebyFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 4
-		}
-		cfg.Genesis = core.DefaultRinkebyGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.RinkebyGenesisHash)
-	case ctx.GlobalBool(GoerliFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 5
-		}
-		cfg.Genesis = core.DefaultGoerliGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.GoerliGenesisHash)
-	case ctx.GlobalBool(MumbaiFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 80001
-		}
-		cfg.Genesis = core.DefaultMumbaiGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.MumbaiGenesisHash)
-	case ctx.GlobalBool(BorMainnetFlag.Name):
-		if !ctx.GlobalIsSet(BorMainnetFlag.Name) {
-			cfg.NetworkId = 137
-		}
-		cfg.Genesis = core.DefaultBorMainnetGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.BorMainnetGenesisHash)
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 1337
 		}
-		cfg.SyncMode = downloader.FullSync
 		// Create new developer account or reuse existing one
 		var (
 			developer  accounts.Account
@@ -1690,7 +1636,7 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		if ctx.GlobalIsSet(DataDirFlag.Name) {
 			// Check if we have an already initialized chain and fall back to
 			// that if so. Otherwise we need to generate a new genesis spec.
-			chaindb := MakeChainDatabase(ctx, stack, false) // TODO (MariusVanDerWijden) make this read only
+			chaindb := MakeChainDatabase(ctx, stack, false, false) // TODO (MariusVanDerWijden) make this read only
 			if rawdb.ReadCanonicalHash(chaindb, 0) != (common.Hash{}) {
 				cfg.Genesis = nil // fallback to db content
 			}
@@ -1700,9 +1646,6 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 			cfg.Miner.GasPrice = big.NewInt(1)
 		}
 	default:
-		if cfg.NetworkId == 1 {
-			SetDNSDiscoveryDefaults(cfg, params.MainnetGenesisHash)
-		}
 	}
 }
 
@@ -1711,14 +1654,6 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 func SetDNSDiscoveryDefaults(cfg *ethconfig.Config, genesis common.Hash) {
 	if cfg.EthDiscoveryURLs != nil {
 		return // already set through flags/config
-	}
-	protocol := "all"
-	if cfg.SyncMode == downloader.LightSync {
-		protocol = "les"
-	}
-	if url := params.KnownDNSNetwork(genesis, protocol); url != "" {
-		cfg.EthDiscoveryURLs = []string{url}
-		cfg.SnapDiscoveryURLs = cfg.EthDiscoveryURLs
 	}
 }
 
@@ -1768,36 +1703,11 @@ func SetupMetrics(ctx *cli.Context) {
 		log.Info("Enabling metrics collection")
 
 		var (
-			enableExport   = ctx.GlobalBool(MetricsEnableInfluxDBFlag.Name)
-			enableExportV2 = ctx.GlobalBool(MetricsEnableInfluxDBV2Flag.Name)
-		)
-
-		if enableExport || enableExportV2 {
-			CheckExclusive(ctx, MetricsEnableInfluxDBFlag, MetricsEnableInfluxDBV2Flag)
-
-			v1FlagIsSet := ctx.GlobalIsSet(MetricsInfluxDBUsernameFlag.Name) ||
-				ctx.GlobalIsSet(MetricsInfluxDBPasswordFlag.Name)
-
-			v2FlagIsSet := ctx.GlobalIsSet(MetricsInfluxDBTokenFlag.Name) ||
-				ctx.GlobalIsSet(MetricsInfluxDBOrganizationFlag.Name) ||
-				ctx.GlobalIsSet(MetricsInfluxDBBucketFlag.Name)
-
-			if enableExport && v2FlagIsSet {
-				Fatalf("Flags --influxdb.metrics.organization, --influxdb.metrics.token, --influxdb.metrics.bucket are only available for influxdb-v2")
-			} else if enableExportV2 && v1FlagIsSet {
-				Fatalf("Flags --influxdb.metrics.username, --influxdb.metrics.password are only available for influxdb-v1")
-			}
-		}
-
-		var (
-			endpoint = ctx.GlobalString(MetricsInfluxDBEndpointFlag.Name)
-			database = ctx.GlobalString(MetricsInfluxDBDatabaseFlag.Name)
-			username = ctx.GlobalString(MetricsInfluxDBUsernameFlag.Name)
-			password = ctx.GlobalString(MetricsInfluxDBPasswordFlag.Name)
-
-			token        = ctx.GlobalString(MetricsInfluxDBTokenFlag.Name)
-			bucket       = ctx.GlobalString(MetricsInfluxDBBucketFlag.Name)
-			organization = ctx.GlobalString(MetricsInfluxDBOrganizationFlag.Name)
+			enableExport = ctx.GlobalBool(MetricsEnableInfluxDBFlag.Name)
+			endpoint     = ctx.GlobalString(MetricsInfluxDBEndpointFlag.Name)
+			database     = ctx.GlobalString(MetricsInfluxDBDatabaseFlag.Name)
+			username     = ctx.GlobalString(MetricsInfluxDBUsernameFlag.Name)
+			password     = ctx.GlobalString(MetricsInfluxDBPasswordFlag.Name)
 		)
 
 		if enableExport {
@@ -1806,12 +1716,6 @@ func SetupMetrics(ctx *cli.Context) {
 			log.Info("Enabling metrics export to InfluxDB")
 
 			go influxdb.InfluxDBWithTags(metrics.DefaultRegistry, 10*time.Second, endpoint, database, username, password, "geth.", tagsMap)
-		} else if enableExportV2 {
-			tagsMap := SplitTagsFlag(ctx.GlobalString(MetricsInfluxDBTagsFlag.Name))
-
-			log.Info("Enabling metrics export to InfluxDB (v2)")
-
-			go influxdb.InfluxDBV2WithTags(metrics.DefaultRegistry, 10*time.Second, endpoint, token, bucket, organization, "geth.", tagsMap)
 		}
 
 		if ctx.GlobalIsSet(MetricsHTTPFlag.Name) {
@@ -1840,7 +1744,7 @@ func SplitTagsFlag(tagsFlag string) map[string]string {
 }
 
 // MakeChainDatabase open an LevelDB using the flags passed to the client and will hard crash if it fails.
-func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.Database {
+func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly, disableFreeze bool) ethdb.Database {
 	var (
 		cache   = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheDatabaseFlag.Name) / 100
 		handles = MakeDatabaseHandles()
@@ -1853,7 +1757,7 @@ func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.
 		chainDb, err = stack.OpenDatabase(name, cache, handles, "", readonly)
 	} else {
 		name := "chaindata"
-		chainDb, err = stack.OpenDatabaseWithFreezer(name, cache, handles, ctx.GlobalString(AncientFlag.Name), "", readonly)
+		chainDb, err = stack.OpenDatabaseWithFreezer(name, cache, handles, ctx.GlobalString(AncientFlag.Name), "", readonly, disableFreeze, false)
 	}
 	if err != nil {
 		Fatalf("Could not open database: %v", err)
@@ -1862,76 +1766,33 @@ func MakeChainDatabase(ctx *cli.Context, stack *node.Node, readonly bool) ethdb.
 }
 
 func MakeGenesis(ctx *cli.Context) *core.Genesis {
-	var genesis *core.Genesis
-	switch {
-	case ctx.GlobalBool(MainnetFlag.Name):
-		genesis = core.DefaultGenesisBlock()
-	case ctx.GlobalBool(RopstenFlag.Name):
-		genesis = core.DefaultRopstenGenesisBlock()
-	case ctx.GlobalBool(RinkebyFlag.Name):
-		genesis = core.DefaultRinkebyGenesisBlock()
-	case ctx.GlobalBool(GoerliFlag.Name):
-		genesis = core.DefaultGoerliGenesisBlock()
-	case ctx.GlobalBool(MumbaiFlag.Name):
-		genesis = core.DefaultMumbaiGenesisBlock()
-	case ctx.GlobalBool(BorMainnetFlag.Name):
-		genesis = core.DefaultBorMainnetGenesisBlock()
-	case ctx.GlobalBool(DeveloperFlag.Name):
-		Fatalf("Developer chains are ephemeral")
-	}
-	return genesis
+	panic("no genesis")
 }
 
 // MakeChain creates a chain manager from set command line flags.
 func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chainDb ethdb.Database) {
-	// expecting the last argument to be the genesis file
-	genesis, err := getGenesis(ctx.Args().Get(len(ctx.Args()) - 1))
-	if err != nil {
-		Fatalf("Valid genesis file is required as argument: {}", err)
-	}
-
-	chainDb = MakeChainDatabase(ctx, stack, false) // TODO(rjl493456442) support read-only database
-	config, _, err := core.SetupGenesisBlock(chainDb, genesis)
+	var err error
+	chainDb = MakeChainDatabase(ctx, stack, false, false) // TODO(rjl493456442) support read-only database
+	config, _, err := core.SetupGenesisBlock(chainDb, MakeGenesis(ctx))
 	if err != nil {
 		Fatalf("%v", err)
 	}
 	var engine consensus.Engine
-	var ethereum *eth.Ethereum
 	if config.Clique != nil {
 		engine = clique.New(config.Clique, chainDb)
-	} else if config.Bor != nil {
-		ethereum = CreateBorEthereum(&eth.Config{
-			Genesis:         genesis,
-			HeimdallURL:     ctx.GlobalString(HeimdallURLFlag.Name),
-			WithoutHeimdall: ctx.GlobalBool(WithoutHeimdallFlag.Name),
-		})
-		engine = ethereum.Engine()
 	} else {
-		engine = ethash.NewFaker()
-		if !ctx.GlobalBool(FakePoWFlag.Name) {
-			engine = ethash.New(ethash.Config{
-				CacheDir:         stack.ResolvePath(ethconfig.Defaults.Ethash.CacheDir),
-				CachesInMem:      ethconfig.Defaults.Ethash.CachesInMem,
-				CachesOnDisk:     ethconfig.Defaults.Ethash.CachesOnDisk,
-				CachesLockMmap:   ethconfig.Defaults.Ethash.CachesLockMmap,
-				DatasetDir:       stack.ResolvePath(ethconfig.Defaults.Ethash.DatasetDir),
-				DatasetsInMem:    ethconfig.Defaults.Ethash.DatasetsInMem,
-				DatasetsOnDisk:   ethconfig.Defaults.Ethash.DatasetsOnDisk,
-				DatasetsLockMmap: ethconfig.Defaults.Ethash.DatasetsLockMmap,
-			}, nil, false)
-		}
 	}
 	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
 	cache := &core.CacheConfig{
-		TrieCleanLimit:      ethconfig.Defaults.TrieCleanCache,
-		TrieCleanNoPrefetch: ctx.GlobalBool(CacheNoPrefetchFlag.Name),
-		TrieDirtyLimit:      ethconfig.Defaults.TrieDirtyCache,
-		TrieDirtyDisabled:   ctx.GlobalString(GCModeFlag.Name) == "archive",
-		TrieTimeLimit:       ethconfig.Defaults.TrieTimeout,
-		SnapshotLimit:       ethconfig.Defaults.SnapshotCache,
-		Preimages:           ctx.GlobalBool(CachePreimagesFlag.Name),
+		TrieCleanLimit:    ethconfig.Defaults.TrieCleanCache,
+		TrieDirtyLimit:    ethconfig.Defaults.TrieDirtyCache,
+		TrieDirtyDisabled: ctx.GlobalString(GCModeFlag.Name) == "archive",
+		TrieTimeLimit:     ethconfig.Defaults.TrieTimeout,
+		TriesInMemory:     ethconfig.Defaults.TriesInMemory,
+		SnapshotLimit:     ethconfig.Defaults.SnapshotCache,
+		Preimages:         ctx.GlobalBool(CachePreimagesFlag.Name),
 	}
 	if cache.TrieDirtyDisabled && !cache.Preimages {
 		cache.Preimages = true
@@ -1946,6 +1807,9 @@ func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chai
 	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheGCFlag.Name) {
 		cache.TrieDirtyLimit = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheGCFlag.Name) / 100
 	}
+	if ctx.GlobalIsSet(TriesInMemoryFlag.Name) {
+		cache.TriesInMemory = ctx.GlobalUint64(TriesInMemoryFlag.Name)
+	}
 	vmcfg := vm.Config{EnablePreimageRecording: ctx.GlobalBool(VMEnableDebugFlag.Name)}
 
 	// TODO(rjl493456442) disable snapshot generation/wiping if the chain is read only.
@@ -1953,9 +1817,6 @@ func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chai
 	chain, err = core.NewBlockChain(chainDb, cache, config, engine, vmcfg, nil, nil)
 	if err != nil {
 		Fatalf("Can't create BlockChain: %v", err)
-	}
-	if ethereum != nil {
-		ethereum.SetBlockchain(chain)
 	}
 	return chain, chainDb
 }
@@ -1993,7 +1854,7 @@ func MigrateFlags(action func(ctx *cli.Context) error) func(*cli.Context) error 
 	return func(ctx *cli.Context) error {
 		for _, name := range ctx.FlagNames() {
 			if ctx.IsSet(name) {
-				ctx.GlobalSet(name, ctx.String(name))
+				_ = ctx.GlobalSet(name, ctx.String(name))
 			}
 		}
 		return action(ctx)

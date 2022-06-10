@@ -24,10 +24,8 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rlp"
 )
 
 var (
@@ -248,14 +246,6 @@ func (t *Trie) Update(key, value []byte) {
 	}
 }
 
-func (t *Trie) TryUpdateAccount(key []byte, acc *types.StateAccount) error {
-	data, err := rlp.EncodeToBytes(acc)
-	if err != nil {
-		return fmt.Errorf("can't encode object at %x: %w", key[:], err)
-	}
-	return t.TryUpdate(key, data)
-}
-
 // TryUpdate associates key with value in the trie. Subsequent calls to
 // Get will return value. If value has length zero, any existing value
 // is deleted from the trie and calls to Get will return nil.
@@ -415,14 +405,6 @@ func (t *Trie) delete(n node, prefix, key []byte) (bool, node, error) {
 		n.flags = t.newFlag()
 		n.Children[key[0]] = nn
 
-		// Because n is a full node, it must've contained at least two children
-		// before the delete operation. If the new child value is non-nil, n still
-		// has at least two children after the deletion, and cannot be reduced to
-		// a short node.
-		if nn != nil {
-			return true, n, nil
-		}
-		// Reduction:
 		// Check how many non-nil entries are left after deleting and
 		// reduce the full node to a short node if only one entry is
 		// left. Since n must've contained at least two children
@@ -524,12 +506,12 @@ func (t *Trie) Hash() common.Hash {
 
 // Commit writes all nodes to the trie's memory database, tracking the internal
 // and external (for account tries) references.
-func (t *Trie) Commit(onleaf LeafCallback) (common.Hash, int, error) {
+func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 	if t.db == nil {
 		panic("commit called on trie with nil database")
 	}
 	if t.root == nil {
-		return emptyRoot, 0, nil
+		return emptyRoot, nil
 	}
 	// Derive the hash for all dirty nodes first. We hold the assumption
 	// in the following procedure that all nodes are hashed.
@@ -541,7 +523,7 @@ func (t *Trie) Commit(onleaf LeafCallback) (common.Hash, int, error) {
 	// up goroutines. This can happen e.g. if we load a trie for reading storage
 	// values, but don't write to it.
 	if _, dirty := t.root.cache(); !dirty {
-		return rootHash, 0, nil
+		return rootHash, nil
 	}
 	var wg sync.WaitGroup
 	if onleaf != nil {
@@ -553,7 +535,8 @@ func (t *Trie) Commit(onleaf LeafCallback) (common.Hash, int, error) {
 			h.commitLoop(t.db)
 		}()
 	}
-	newRoot, committed, err := h.Commit(t.root, t.db)
+	var newRoot hashNode
+	newRoot, err = h.Commit(t.root, t.db)
 	if onleaf != nil {
 		// The leafch is created in newCommitter if there was an onleaf callback
 		// provided. The commitLoop only _reads_ from it, and the commit
@@ -563,10 +546,10 @@ func (t *Trie) Commit(onleaf LeafCallback) (common.Hash, int, error) {
 		wg.Wait()
 	}
 	if err != nil {
-		return common.Hash{}, 0, err
+		return common.Hash{}, err
 	}
 	t.root = newRoot
-	return rootHash, committed, nil
+	return rootHash, nil
 }
 
 // hashRoot calculates the root hash of the given trie
@@ -586,4 +569,8 @@ func (t *Trie) hashRoot() (node, node, error) {
 func (t *Trie) Reset() {
 	t.root = nil
 	t.unhashed = 0
+}
+
+func (t *Trie) Size() int {
+	return estimateSize(t.root)
 }

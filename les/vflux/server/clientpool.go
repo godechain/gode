@@ -143,10 +143,8 @@ func NewClientPool(balanceDb ethdb.KeyValueStore, minCap uint64, connectedBias t
 		if oldState.HasAll(cp.setup.activeFlag) && oldState.HasNone(cp.setup.activeFlag) {
 			clientDeactivatedMeter.Mark(1)
 		}
-		activeCount, activeCap := cp.Active()
-		totalActiveCountGauge.Update(int64(activeCount))
-		totalActiveCapacityGauge.Update(int64(activeCap))
-		totalInactiveCountGauge.Update(int64(cp.Inactive()))
+		_, connected := cp.Active()
+		totalConnectedGauge.Update(int64(connected))
 	})
 	return cp
 }

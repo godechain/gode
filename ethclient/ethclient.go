@@ -78,15 +78,6 @@ func (ec *Client) BlockByHash(ctx context.Context, hash common.Hash) (*types.Blo
 	return ec.getBlock(ctx, "eth_getBlockByHash", hash, true)
 }
 
-func (ec *Client) TransactionReceiptsInBlock(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) ([]map[string]interface{}, error) {
-	var rs []map[string]interface{}
-	err := ec.c.CallContext(ctx, &rs, "eth_getTransactionReceiptsByBlock", blockNrOrHash)
-	if err != nil {
-		return nil, err
-	}
-	return rs, err
-}
-
 // BlockByNumber returns a block from the current canonical chain. If number is nil, the
 // latest known block is returned.
 //
@@ -132,6 +123,9 @@ func (ec *Client) getBlock(ctx context.Context, method string, args ...interface
 	}
 	if head.UncleHash != types.EmptyUncleHash && len(body.UncleHashes) == 0 {
 		return nil, fmt.Errorf("server returned empty uncle list but block header indicates uncles")
+	}
+	if head.TxHash == types.EmptyRootHash && len(body.Transactions) > 0 {
+		return nil, fmt.Errorf("server returned non-empty transaction list but block header indicates no transactions")
 	}
 	if head.TxHash != types.EmptyRootHash && len(body.Transactions) == 0 {
 		return nil, fmt.Errorf("server returned empty transaction list but block header indicates transactions")
@@ -190,6 +184,20 @@ func (ec *Client) HeaderByNumber(ctx context.Context, number *big.Int) (*types.H
 		err = ethereum.NotFound
 	}
 	return head, err
+}
+
+// GetDiffAccounts returns changed accounts in a specific block number.
+func (ec *Client) GetDiffAccounts(ctx context.Context, number *big.Int) ([]common.Address, error) {
+	accounts := make([]common.Address, 0)
+	err := ec.c.CallContext(ctx, &accounts, "eth_getDiffAccounts", toBlockNumArg(number))
+	return accounts, err
+}
+
+// GetDiffAccountsWithScope returns detailed changes of some interested accounts in a specific block number.
+func (ec *Client) GetDiffAccountsWithScope(ctx context.Context, number *big.Int, accounts []common.Address) (*types.DiffAccountsInBlock, error) {
+	var result types.DiffAccountsInBlock
+	err := ec.c.CallContext(ctx, &result, "eth_getDiffAccountsWithScope", toBlockNumArg(number), accounts)
+	return &result, err
 }
 
 type rpcTransaction struct {
@@ -277,6 +285,44 @@ func (ec *Client) TransactionInBlock(ctx context.Context, blockHash common.Hash,
 	return json.tx, err
 }
 
+// TransactionInBlock returns a single transaction at index in the given block.
+func (ec *Client) TransactionsInBlock(ctx context.Context, number *big.Int) ([]*types.Transaction, error) {
+	var rpcTxs []*rpcTransaction
+	err := ec.c.CallContext(ctx, &rpcTxs, "eth_getTransactionsByBlockNumber", toBlockNumArg(number))
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println(len(rpcTxs))
+	txs := make([]*types.Transaction, 0, len(rpcTxs))
+	for _, tx := range rpcTxs {
+		txs = append(txs, tx.tx)
+	}
+	return txs, err
+}
+
+// TransactionInBlock returns a single transaction at index in the given block.
+func (ec *Client) TransactionRecipientsInBlock(ctx context.Context, number *big.Int) ([]*types.Receipt, error) {
+	var rs []*types.Receipt
+	err := ec.c.CallContext(ctx, &rs, "eth_getTransactionReceiptsByBlockNumber", toBlockNumArg(number))
+	if err != nil {
+		return nil, err
+	}
+	return rs, err
+}
+
+// TransactionDataAndReceipt returns the original data and receipt of a transaction by transaction hash.
+// Note that the receipt is not available for pending transactions.
+func (ec *Client) TransactionDataAndReceipt(ctx context.Context, txHash common.Hash) (*types.OriginalDataAndReceipt, error) {
+	var r *types.OriginalDataAndReceipt
+	err := ec.c.CallContext(ctx, &r, "eth_getTransactionDataAndReceipt", txHash)
+	if err == nil {
+		if r == nil {
+			return nil, ethereum.NotFound
+		}
+	}
+	return r, err
+}
+
 // TransactionReceipt returns the receipt of a transaction by transaction hash.
 // Note that the receipt is not available for pending transactions.
 func (ec *Client) TransactionReceipt(ctx context.Context, txHash common.Hash) (*types.Receipt, error) {
@@ -288,6 +334,17 @@ func (ec *Client) TransactionReceipt(ctx context.Context, txHash common.Hash) (*
 		}
 	}
 	return r, err
+}
+
+func toBlockNumArg(number *big.Int) string {
+	if number == nil {
+		return "latest"
+	}
+	pending := big.NewInt(-1)
+	if number.Cmp(pending) == 0 {
+		return "pending"
+	}
+	return hexutil.EncodeBig(number)
 }
 
 type rpcProgress struct {
@@ -457,6 +514,8 @@ func (ec *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
 	return uint(num), err
 }
 
+// TODO: SubscribePendingTransactions (needs server side)
+
 // Contract Calling
 
 // CallContract executes a message call transaction, which is directly executed in the VM
@@ -495,16 +554,6 @@ func (ec *Client) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
 	return (*big.Int)(&hex), nil
 }
 
-// SuggestGasTipCap retrieves the currently suggested gas tip cap after 1559 to
-// allow a timely execution of a transaction.
-func (ec *Client) SuggestGasTipCap(ctx context.Context) (*big.Int, error) {
-	var hex hexutil.Big
-	if err := ec.c.CallContext(ctx, &hex, "eth_maxPriorityFeePerGas"); err != nil {
-		return nil, err
-	}
-	return (*big.Int)(&hex), nil
-}
-
 // EstimateGas tries to estimate the gas needed to execute a specific transaction based on
 // the current pending state of the backend blockchain. There is no guarantee that this is
 // the true gas limit requirement as other transactions may be added or removed by miners,
@@ -528,17 +577,6 @@ func (ec *Client) SendTransaction(ctx context.Context, tx *types.Transaction) er
 		return err
 	}
 	return ec.c.CallContext(ctx, nil, "eth_sendRawTransaction", hexutil.Encode(data))
-}
-
-func toBlockNumArg(number *big.Int) string {
-	if number == nil {
-		return "latest"
-	}
-	pending := big.NewInt(-1)
-	if number.Cmp(pending) == 0 {
-		return "pending"
-	}
-	return hexutil.EncodeBig(number)
 }
 
 func toCallArg(msg ethereum.CallMsg) interface{} {

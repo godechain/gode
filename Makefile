@@ -2,7 +2,7 @@
 # with Go source code. If you know what GOPATH is then you probably
 # don't need to bother with make.
 
-.PHONY: geth android ios geth-cross evm all test clean
+.PHONY: geth android ios geth-cross evm all test truffle-test clean
 .PHONY: geth-linux geth-linux-386 geth-linux-amd64 geth-linux-mips64 geth-linux-mips64le
 .PHONY: geth-linux-arm geth-linux-arm-5 geth-linux-arm-6 geth-linux-arm-7 geth-linux-arm64
 .PHONY: geth-darwin geth-darwin-386 geth-darwin-amd64
@@ -11,22 +11,6 @@
 GOBIN = ./build/bin
 GO ?= latest
 GORUN = env GO111MODULE=on go run
-GOPATH = $(shell go env GOPATH)
-
-protoc:
-	protoc --go_out=. --go-grpc_out=. ./command/server/proto/*.proto
-
-bor:
-	$(GORUN) build/ci.go install ./cmd/geth
-	mkdir -p $(GOPATH)/bin/
-	cp $(GOBIN)/geth $(GOBIN)/bor
-	cp $(GOBIN)/* $(GOPATH)/bin/
-
-bor-all:
-	$(GORUN) build/ci.go install
-	mkdir -p $(GOPATH)/bin/
-	cp $(GOBIN)/geth $(GOBIN)/bor
-	cp $(GOBIN)/* $(GOPATH)/bin/
 
 geth:
 	$(GORUN) build/ci.go install ./cmd/geth
@@ -49,9 +33,17 @@ ios:
 	@echo "Import \"$(GOBIN)/Geth.framework\" to use the library."
 
 test: all
-	# $(GORUN) build/ci.go test
-	go test github.com/ethereum/go-ethereum/consensus/bor -v
-	go test github.com/ethereum/go-ethereum/tests/bor -v
+	$(GORUN) build/ci.go test -timeout 1h
+
+truffle-test:
+	docker build . -f ./docker/Dockerfile --target gode-genesis -t gode-genesis
+	docker build . -f ./docker/Dockerfile --target bsc -t bsc
+	docker build . -f ./docker/Dockerfile.truffle -t truffle-test
+	docker-compose -f ./tests/truffle/docker-compose.yml up genesis
+	docker-compose -f ./tests/truffle/docker-compose.yml up -d gode-rpc gode-validator1
+	sleep 30
+	docker-compose -f ./tests/truffle/docker-compose.yml up --exit-code-from truffle-test truffle-test
+	docker-compose -f ./tests/truffle/docker-compose.yml down
 
 lint: ## Run linters.
 	$(GORUN) build/ci.go lint
@@ -163,37 +155,3 @@ geth-windows-amd64:
 	$(GORUN) build/ci.go xgo -- --go=$(GO) --targets=windows/amd64 -v ./cmd/geth
 	@echo "Windows amd64 cross compilation done:"
 	@ls -ld $(GOBIN)/geth-windows-* | grep amd64
-
-PACKAGE_NAME          := github.com/maticnetwork/bor
-GOLANG_CROSS_VERSION  ?= v1.17.2
-
-.PHONY: release-dry-run
-release-dry-run:
-	@docker run \
-		--rm \
-		--privileged \
-		-e CGO_ENABLED=1 \
-		-e GITHUB_TOKEN \
-		-e DOCKER_USERNAME \
-		-e DOCKER_PASSWORD \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-v `pwd`:/go/src/$(PACKAGE_NAME) \
-		-w /go/src/$(PACKAGE_NAME) \
-		ghcr.io/troian/golang-cross:${GOLANG_CROSS_VERSION} \
-		--rm-dist --skip-validate --skip-publish
-
-.PHONY: release
-release:
-	@docker run \
-		--rm \
-		--privileged \
-		-e CGO_ENABLED=1 \
-		-e GITHUB_TOKEN \
-		-e DOCKER_USERNAME \
-		-e DOCKER_PASSWORD \
-		-e SLACK_WEBHOOK \
-		-v /var/run/docker.sock:/var/run/docker.sock \
-		-v `pwd`:/go/src/$(PACKAGE_NAME) \
-		-w /go/src/$(PACKAGE_NAME) \
-		ghcr.io/troian/golang-cross:${GOLANG_CROSS_VERSION} \
-		--rm-dist --skip-validate

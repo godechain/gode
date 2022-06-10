@@ -1,5 +1,5 @@
-//go:build cgo && !appengine && !js
-// +build cgo,!appengine,!js
+// +build cgo
+// +build !appengine
 
 package metrics
 

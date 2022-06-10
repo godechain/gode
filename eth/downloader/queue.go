@@ -40,10 +40,10 @@ const (
 )
 
 var (
-	blockCacheMaxItems     = 8192              // Maximum number of blocks to cache before throttling the download
-	blockCacheInitialItems = 2048              // Initial number of blocks to start fetching, before we know the sizes of the blocks
-	blockCacheMemory       = 256 * 1024 * 1024 // Maximum amount of memory to use for block caching
-	blockCacheSizeWeight   = 0.1               // Multiplier to approximate the average block size based on past ones
+	blockCacheMaxItems     = 8192             // Maximum number of blocks to cache before throttling the download
+	blockCacheInitialItems = 2048             // Initial number of blocks to start fetching, before we know the sizes of the blocks
+	blockCacheMemory       = 64 * 1024 * 1024 // Maximum amount of memory to use for block caching
+	blockCacheSizeWeight   = 0.1              // Multiplier to approximate the average block size based on past ones
 )
 
 var (
@@ -63,6 +63,7 @@ type fetchRequest struct {
 // all outstanding pieces complete and the result as a whole can be processed.
 type fetchResult struct {
 	pending int32 // Flag telling what deliveries are outstanding
+	pid     string
 
 	Header       *types.Header
 	Uncles       []*types.Header
@@ -70,9 +71,10 @@ type fetchResult struct {
 	Receipts     types.Receipts
 }
 
-func newFetchResult(header *types.Header, fastSync bool) *fetchResult {
+func newFetchResult(header *types.Header, fastSync bool, pid string) *fetchResult {
 	item := &fetchResult{
 		Header: header,
+		pid:    pid,
 	}
 	if !header.EmptyBody() {
 		item.pending |= (1 << bodyType)
@@ -503,7 +505,7 @@ func (q *queue) reserveHeaders(p *peerConnection, count int, taskPool map[common
 		// we can ask the resultcache if this header is within the
 		// "prioritized" segment of blocks. If it is not, we need to throttle
 
-		stale, throttle, item, err := q.resultCache.AddFetch(header, q.mode == FastSync)
+		stale, throttle, item, err := q.resultCache.AddFetch(header, q.mode == FastSync, p.id)
 		if stale {
 			// Don't put back in the task queue, this item has already been
 			// delivered upstream
@@ -783,9 +785,8 @@ func (q *queue) DeliverHeaders(id string, headers []*types.Header, headerProcCh 
 func (q *queue) DeliverBodies(id string, txLists [][]*types.Transaction, uncleLists [][]*types.Header) (int, error) {
 	q.lock.Lock()
 	defer q.lock.Unlock()
-	trieHasher := trie.NewStackTrie(nil)
 	validate := func(index int, header *types.Header) error {
-		if types.DeriveSha(types.Transactions(txLists[index]), trieHasher) != header.TxHash {
+		if types.DeriveSha(types.Transactions(txLists[index]), trie.NewStackTrie(nil)) != header.TxHash {
 			return errInvalidBody
 		}
 		if types.CalcUncleHash(uncleLists[index]) != header.UncleHash {
@@ -809,9 +810,8 @@ func (q *queue) DeliverBodies(id string, txLists [][]*types.Transaction, uncleLi
 func (q *queue) DeliverReceipts(id string, receiptList [][]*types.Receipt) (int, error) {
 	q.lock.Lock()
 	defer q.lock.Unlock()
-	trieHasher := trie.NewStackTrie(nil)
 	validate := func(index int, header *types.Header) error {
-		if types.DeriveSha(types.Receipts(receiptList[index]), trieHasher) != header.ReceiptHash {
+		if types.DeriveSha(types.Receipts(receiptList[index]), trie.NewStackTrie(nil)) != header.ReceiptHash {
 			return errInvalidReceipt
 		}
 		return nil

@@ -46,14 +46,13 @@ import (
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/signer/core"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/ethereum/go-ethereum/signer/fourbyte"
 	"github.com/ethereum/go-ethereum/signer/rules"
 	"github.com/ethereum/go-ethereum/signer/storage"
+
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 	"gopkg.in/urfave/cli.v1"
@@ -99,7 +98,6 @@ var (
 	}
 	chainIdFlag = cli.Int64Flag{
 		Name:  "chainid",
-		Value: params.MainnetChainConfig.ChainID.Int64(),
 		Usage: "Chain id to use for signing (1=mainnet, 3=Ropsten, 4=Rinkeby, 5=Goerli)",
 	}
 	rpcPortFlag = cli.IntFlag{
@@ -657,7 +655,7 @@ func signer(c *cli.Context) error {
 		cors := utils.SplitAndTrim(c.GlobalString(utils.HTTPCORSDomainFlag.Name))
 
 		srv := rpc.NewServer()
-		err := node.RegisterApis(rpcAPI, []string{"account"}, srv, false)
+		err := node.RegisterApisFromWhitelist(rpcAPI, []string{"account"}, srv, false)
 		if err != nil {
 			utils.Fatalf("Could not register API: %w", err)
 		}
@@ -923,13 +921,13 @@ func testExternalUI(api *core.SignerAPI) {
 		time.Sleep(delay)
 		data := hexutil.Bytes([]byte{})
 		to := common.NewMixedcaseAddress(a)
-		tx := apitypes.SendTxArgs{
+		tx := core.SendTxArgs{
 			Data:     &data,
 			Nonce:    0x1,
 			Value:    hexutil.Big(*big.NewInt(6)),
 			From:     common.NewMixedcaseAddress(a),
 			To:       &to,
-			GasPrice: (*hexutil.Big)(big.NewInt(5)),
+			GasPrice: hexutil.Big(*big.NewInt(5)),
 			Gas:      1000,
 			Input:    nil,
 		}
@@ -1055,17 +1053,17 @@ func GenDoc(ctx *cli.Context) {
 		data := hexutil.Bytes([]byte{0x01, 0x02, 0x03, 0x04})
 		add("SignTxRequest", desc, &core.SignTxRequest{
 			Meta: meta,
-			Callinfo: []apitypes.ValidationInfo{
+			Callinfo: []core.ValidationInfo{
 				{Typ: "Warning", Message: "Something looks odd, show this message as a warning"},
 				{Typ: "Info", Message: "User should see this as well"},
 			},
-			Transaction: apitypes.SendTxArgs{
+			Transaction: core.SendTxArgs{
 				Data:     &data,
 				Nonce:    0x1,
 				Value:    hexutil.Big(*big.NewInt(6)),
 				From:     common.NewMixedcaseAddress(a),
 				To:       nil,
-				GasPrice: (*hexutil.Big)(big.NewInt(5)),
+				GasPrice: hexutil.Big(*big.NewInt(5)),
 				Gas:      1000,
 				Input:    nil,
 			}})
@@ -1075,13 +1073,13 @@ func GenDoc(ctx *cli.Context) {
 		add("SignTxResponse - approve", "Response to request to sign a transaction. This response needs to contain the `transaction`"+
 			", because the UI is free to make modifications to the transaction.",
 			&core.SignTxResponse{Approved: true,
-				Transaction: apitypes.SendTxArgs{
+				Transaction: core.SendTxArgs{
 					Data:     &data,
 					Nonce:    0x4,
 					Value:    hexutil.Big(*big.NewInt(6)),
 					From:     common.NewMixedcaseAddress(a),
 					To:       nil,
-					GasPrice: (*hexutil.Big)(big.NewInt(5)),
+					GasPrice: hexutil.Big(*big.NewInt(5)),
 					Gas:      1000,
 					Input:    nil,
 				}})

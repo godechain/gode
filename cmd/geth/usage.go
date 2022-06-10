@@ -22,10 +22,11 @@ import (
 	"io"
 	"sort"
 
+	"gopkg.in/urfave/cli.v1"
+
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/internal/debug"
 	"github.com/ethereum/go-ethereum/internal/flags"
-	"gopkg.in/urfave/cli.v1"
 )
 
 // AppHelpFlagGroups is the application flags, grouped by functionality.
@@ -38,15 +39,12 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.AncientFlag,
 			utils.MinFreeDiskSpaceFlag,
 			utils.KeyStoreDirFlag,
-			utils.USBFlag,
+			utils.NoUSBFlag,
+			utils.DirectBroadcastFlag,
+			utils.DisableSnapProtocolFlag,
+			utils.RangeLimitFlag,
 			utils.SmartCardDaemonPathFlag,
 			utils.NetworkIdFlag,
-			utils.MainnetFlag,
-			utils.GoerliFlag,
-			utils.MumbaiFlag,
-			utils.BorMainnetFlag,
-			utils.RinkebyFlag,
-			utils.RopstenFlag,
 			utils.SyncModeFlag,
 			utils.ExitWhenSyncedFlag,
 			utils.GCModeFlag,
@@ -55,6 +53,9 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.IdentityFlag,
 			utils.LightKDFFlag,
 			utils.WhitelistFlag,
+			utils.TriesInMemoryFlag,
+			utils.BlockAmountReserved,
+			utils.CheckSnapshotWithMPT,
 		},
 	},
 	{
@@ -79,19 +80,6 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 		},
 	},
 	{
-		Name: "ETHASH",
-		Flags: []cli.Flag{
-			utils.EthashCacheDirFlag,
-			utils.EthashCachesInMemoryFlag,
-			utils.EthashCachesOnDiskFlag,
-			utils.EthashCachesLockMmapFlag,
-			utils.EthashDatasetDirFlag,
-			utils.EthashDatasetsInMemoryFlag,
-			utils.EthashDatasetsOnDiskFlag,
-			utils.EthashDatasetsLockMmapFlag,
-		},
-	},
-	{
 		Name: "TRANSACTION POOL",
 		Flags: []cli.Flag{
 			utils.TxPoolLocalsFlag,
@@ -105,6 +93,8 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.TxPoolAccountQueueFlag,
 			utils.TxPoolGlobalQueueFlag,
 			utils.TxPoolLifetimeFlag,
+			utils.TxPoolReannounceTimeFlag,
+			utils.TxPoolGasFreeContracts,
 		},
 	},
 	{
@@ -117,7 +107,6 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.CacheTrieRejournalFlag,
 			utils.CacheGCFlag,
 			utils.CacheSnapshotFlag,
-			utils.CacheNoPrefetchFlag,
 			utils.CachePreimagesFlag,
 		},
 	},
@@ -152,7 +141,6 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.GraphQLCORSDomainFlag,
 			utils.GraphQLVirtualHostsFlag,
 			utils.RPCGlobalGasCapFlag,
-			utils.RPCGlobalEVMTimeoutFlag,
 			utils.RPCGlobalTxFeeCapFlag,
 			utils.AllowUnprotectedTxs,
 			utils.JSpathFlag,
@@ -184,11 +172,13 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.MinerNotifyFlag,
 			utils.MinerNotifyFullFlag,
 			utils.MinerGasPriceFlag,
+			utils.MinerGasTargetFlag,
 			utils.MinerGasLimitFlag,
 			utils.MinerEtherbaseFlag,
 			utils.MinerExtraDataFlag,
 			utils.MinerRecommitIntervalFlag,
-			utils.MinerNoVerifyFlag,
+			utils.MinerDelayLeftoverFlag,
+			utils.MinerNoVerfiyFlag,
 		},
 	},
 	{
@@ -197,13 +187,14 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.GpoBlocksFlag,
 			utils.GpoPercentileFlag,
 			utils.GpoMaxGasPriceFlag,
-			utils.GpoIgnoreGasPriceFlag,
 		},
 	},
 	{
 		Name: "VIRTUAL MACHINE",
 		Flags: []cli.Flag{
 			utils.VMEnableDebugFlag,
+			utils.EVMInterpreterFlag,
+			utils.EWASMInterpreterFlag,
 		},
 	},
 	{
@@ -221,6 +212,12 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 		Name: "ALIASED (deprecated)",
 		Flags: []cli.Flag{
 			utils.NoUSBFlag,
+			utils.LegacyRPCEnabledFlag,
+			utils.LegacyRPCListenAddrFlag,
+			utils.LegacyRPCPortFlag,
+			utils.LegacyRPCCORSDomainFlag,
+			utils.LegacyRPCVirtualHostsFlag,
+			utils.LegacyRPCApiFlag,
 		},
 	},
 	{

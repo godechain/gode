@@ -116,7 +116,7 @@ func runCmd(ctx *cli.Context) error {
 	}
 
 	var (
-		tracer        vm.Tracer
+		tracer        vm.EVMLogger
 		debugLogger   *vm.StructLogger
 		statedb       *state.StateDB
 		chainConfig   *params.ChainConfig
@@ -211,8 +211,9 @@ func runCmd(ctx *cli.Context) error {
 		Coinbase:    genesisConfig.Coinbase,
 		BlockNumber: new(big.Int).SetUint64(genesisConfig.Number),
 		EVMConfig: vm.Config{
-			Tracer: tracer,
-			Debug:  ctx.GlobalBool(DebugFlag.Name) || ctx.GlobalBool(MachineFlag.Name),
+			Tracer:         tracer,
+			Debug:          ctx.GlobalBool(DebugFlag.Name) || ctx.GlobalBool(MachineFlag.Name),
+			EVMInterpreter: ctx.GlobalString(EVMInterpreterFlag.Name),
 		},
 	}
 
@@ -267,9 +268,11 @@ func runCmd(ctx *cli.Context) error {
 	output, leftOverGas, stats, err := timedExec(bench, execFunc)
 
 	if ctx.GlobalBool(DumpFlag.Name) {
-		statedb.Commit(true)
+		statedb.Finalise(true)
+		statedb.AccountsIntermediateRoot()
+		statedb.Commit(nil)
 		statedb.IntermediateRoot(true)
-		fmt.Println(string(statedb.Dump(nil)))
+		fmt.Println(string(statedb.Dump(false, false, true)))
 	}
 
 	if memProfilePath := ctx.GlobalString(MemProfileFlag.Name); memProfilePath != "" {

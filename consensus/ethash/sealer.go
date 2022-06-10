@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/gopool"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -100,7 +101,7 @@ func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block
 		}(i, uint64(ethash.rand.Int63()))
 	}
 	// Wait until sealing is terminated or a nonce is found
-	go func() {
+	gopool.Submit(func() {
 		var result *types.Block
 		select {
 		case <-stop:
@@ -123,7 +124,7 @@ func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *types.Block
 		}
 		// Wait for all miners to terminate and return the block
 		pend.Wait()
-	}()
+	})
 	return nil
 }
 
@@ -140,9 +141,8 @@ func (ethash *Ethash) mine(block *types.Block, id int, seed uint64, abort chan s
 	)
 	// Start generating random nonces until we abort or find a good one
 	var (
-		attempts  = int64(0)
-		nonce     = seed
-		powBuffer = new(big.Int)
+		attempts = int64(0)
+		nonce    = seed
 	)
 	logger := ethash.config.Log.New("miner", id)
 	logger.Trace("Started ethash search for new nonces", "seed", seed)
@@ -164,7 +164,7 @@ search:
 			}
 			// Compute the PoW value of this nonce
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
-			if powBuffer.SetBytes(result).Cmp(target) <= 0 {
+			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
 				// Correct nonce found, create a new header with it
 				header = types.CopyHeader(header)
 				header.Nonce = types.EncodeNonce(nonce)

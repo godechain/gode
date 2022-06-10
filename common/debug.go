@@ -37,8 +37,8 @@ func Report(extra ...interface{}) {
 	fmt.Fprintln(os.Stderr, "#### BUG! PLEASE REPORT ####")
 }
 
-// PrintDeprecationWarning prints the given string in a box using fmt.Println.
-func PrintDeprecationWarning(str string) {
+// PrintDepricationWarning prinst the given string in a box using fmt.Println.
+func PrintDepricationWarning(str string) {
 	line := strings.Repeat("#", len(str)+4)
 	emptyLine := strings.Repeat(" ", len(str))
 	fmt.Printf(`
