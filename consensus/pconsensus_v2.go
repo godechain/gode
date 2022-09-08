@@ -6,3 +6,5 @@
 // meeting 13 : all node auto check
 
 // meeting 14 : load balancing of rpc and explorer
+
+// meeting : metagod v1.0 testing
