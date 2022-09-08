@@ -7,4 +7,4 @@
 
 // meeting 14 : load balancing of rpc and explorer
 
-// meeting : metagod v1.0 testing
+// meeting 15 : metagod v1.0 testing
