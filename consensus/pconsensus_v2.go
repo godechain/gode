@@ -12,3 +12,5 @@
 // meeting 16 : metagod ios v1.0 testing
 
 // meeting 17 : mid-autumn gode talk
+
+// meeting 18 : metagod apk tesing round 2
