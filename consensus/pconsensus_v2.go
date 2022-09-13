@@ -14,3 +14,5 @@
 // meeting 17 : mid-autumn gode talk
 
 // meeting 18 : metagod apk tesing round 2
+
+// meeting 19 : lucyhash multi-chain solutions
