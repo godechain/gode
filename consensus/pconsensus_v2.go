@@ -16,3 +16,5 @@
 // meeting 18 : metagod apk tesing round 2
 
 // meeting 19 : lucyhash multi-chain solutions
+
+// meeting 20 : lucyhash v2 conversation
