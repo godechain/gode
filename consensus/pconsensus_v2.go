@@ -18,3 +18,5 @@
 // meeting 19 : lucyhash multi-chain solutions
 
 // meeting 20 : lucyhash v2 conversation
+
+// meeting 21 : godechain POSA v2 extending
