@@ -20,3 +20,5 @@
 // meeting 20 : lucyhash v2 conversation
 
 // meeting 21 : godechain POSA v2 extending
+
+// meeting 22 : metagod apk testing round 3
