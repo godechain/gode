@@ -22,3 +22,5 @@
 // meeting 21 : godechain POSA v2 extending
 
 // meeting 22 : metagod apk testing round 3
+
+// meeting 23 : cx times
