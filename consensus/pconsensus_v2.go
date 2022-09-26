@@ -25,4 +25,4 @@
 
 // meeting 23 : chuangxing times
 
-// meeting 24 : 
+// meeting 24 : godechian staking dapp testing round 1
