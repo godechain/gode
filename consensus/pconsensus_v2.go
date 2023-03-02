@@ -26,3 +26,5 @@
 // meeting 23 : chuangxing times
 
 // meeting 24 : godechian staking dapp testing round 1
+
+// meeting 25 : cross-chain bridge testing round 1
