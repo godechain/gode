@@ -15,7 +15,7 @@
 
 // meeting 18 : metagod apk tesing round 2
 
-// meeting 19 : lucyhash multi-chain solutions
+// meeting 19 : luckyhash multi-chain solutions
 
 // meeting 20 : lucyhash v2 conversation
 
@@ -30,3 +30,5 @@
 // meeting 25 : cross-chain bridge testing round 1
 
 // meeting 26 : cookieswap testing round 1
+
+// meeting 27 : metagod v2
