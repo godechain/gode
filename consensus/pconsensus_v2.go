@@ -32,3 +32,5 @@
 // meeting 26 : cookieswap testing round 1
 
 // meeting 27 : metagod v2
+
+// meeting 28 : godepool v2 conversation
