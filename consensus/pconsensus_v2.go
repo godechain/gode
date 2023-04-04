@@ -34,3 +34,5 @@
 // meeting 27 : metagod v2
 
 // meeting 28 : godepool v2 conversation
+
+// meeting 29 : metastar testing round 1
