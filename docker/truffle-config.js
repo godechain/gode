@@ -34,7 +34,7 @@ module.exports = {
      *
      * $ truffle test --network <network-name>
      */
-
+  
     networks: {
       // Useful for testing. The `development` name is special - truffle uses it by default
       // if it's defined here and no other network is specified at the command line.
@@ -45,15 +45,15 @@ module.exports = {
       development: {
        host: process.env.RPC_HOST || '127.0.0.1',     // Localhost (default: none)
        port: process.env.RPC_PORT || 8545,            // Standard Ethereum port (default: none)
-       network_id: process.env.CHAIN_ID,       // Any network (default: none)
+       network_id: process.env.BSC_CHAIN_ID,       // Any network (default: none)
       },
     },
-
+  
     // Set default mocha options here, use special reporters etc.
     mocha: {
       // timeout: 100000
     },
-
+  
     // Configure your compilers
     compilers: {
       solc: {

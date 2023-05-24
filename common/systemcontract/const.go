@@ -6,7 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// System contracts
+// BSC contracts
 const (
 	ValidatorContract          = "0x0000000000000000000000000000000000001000"
 	SlashContract              = "0x0000000000000000000000000000000000001001"
@@ -20,7 +20,7 @@ const (
 	CrossChainContract         = "0x0000000000000000000000000000000000002000"
 )
 
-// System contacts
+// BAS contacts
 const (
 	StakingPoolContract    = "0x0000000000000000000000000000000000007001"
 	GovernanceContract     = "0x0000000000000000000000000000000000007002"
@@ -41,7 +41,7 @@ var systemContracts = map[common.Address]bool{
 	common.HexToAddress(ValidatorContract):    true,
 	common.HexToAddress(SlashContract):        true,
 	common.HexToAddress(SystemRewardContract): true,
-	// we don't have these smart contracts, it's not strictly required to disable them since they're not deployed
+	// we don't have these smart contract for BAS, it's not strictly required to disable them since they're not deployed
 	common.HexToAddress(LightClientContract):        false,
 	common.HexToAddress(RelayerHubContract):         false,
 	common.HexToAddress(GovHubContract):             false,
@@ -49,7 +49,7 @@ var systemContracts = map[common.Address]bool{
 	common.HexToAddress(RelayerIncentivizeContract): false,
 	common.HexToAddress(CrossChainContract):         false,
 	common.HexToAddress(TokenManagerContract):       false,
-	// System smart contracts
+	// BAS smart contracts
 	common.HexToAddress(StakingPoolContract):    true,
 	common.HexToAddress(GovernanceContract):     true,
 	common.HexToAddress(ChainConfigContract):    true,

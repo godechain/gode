@@ -178,7 +178,7 @@ func ParliaRLP(header *types.Header, chainId *big.Int) []byte {
 	return b.Bytes()
 }
 
-// Parlia is the consensus engine
+// Parlia is the consensus engine of BSC
 type Parlia struct {
 	chainConfig *params.ChainConfig  // Chain config
 	config      *params.ParliaConfig // Consensus engine configuration parameters for parlia consensus

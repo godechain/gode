@@ -26,8 +26,8 @@ function generate_genesis() {
      INIT_HOLDER_ADDRESSES=${INIT_HOLDER_ADDRESSES/%,/}
      sed  "s/{{INIT_HOLDER_ADDRESSES}}/${INIT_HOLDER_ADDRESSES}/g" ${workspace}/genesis/init_holders.template | sed  "s/{{INIT_HOLDER_BALANCE}}/${INIT_HOLDER_BALANCE}/g" > ${workspace}/genesis/init_holders.js
      node generate-validator.js
-     chainIDHex=$(printf '%04x\n' ${CHAIN_ID})
-     node generate-genesis.js --chainid ${CHAIN_ID} --bscChainId ${chainIDHex}
+     chainIDHex=$(printf '%04x\n' ${BSC_CHAIN_ID})
+     node generate-genesis.js --chainid ${BSC_CHAIN_ID} --bscChainId ${chainIDHex}
 }
 
 function init_genesis_data() {
@@ -35,8 +35,8 @@ function init_genesis_data() {
      node_id=$2
      geth --datadir ${workspace}/storage/${node_id} init ${workspace}/genesis/genesis.json
      cp ${workspace}/config/config-${node_type}.toml  ${workspace}/storage/${node_id}/config.toml
-     sed -i -e "s/{{NetworkId}}/${CHAIN_ID}/g" ${workspace}/storage/${node_id}/config.toml
-     if [ "${node_id}" == "gode-rpc" ]; then
+     sed -i -e "s/{{NetworkId}}/${BSC_CHAIN_ID}/g" ${workspace}/storage/${node_id}/config.toml
+     if [ "${node_id}" == "bsc-rpc" ]; then
           cp ${workspace}/init-holders/* ${workspace}/storage/${node_id}/keystore
           cp ${workspace}/genesis/genesis.json ${workspace}/storage/${node_id}
      fi
@@ -46,15 +46,15 @@ prepare
 
 # First, generate config for each validator
 for((i=1;i<=${NUMS_OF_VALIDATOR};i++)); do
-     init_validator "gode-validator${i}"
+     init_validator "bsc-validator${i}"
 done
 
 # Then, use validator configs to generate genesis file
 generate_genesis
 
 # Finally, use genesis file to init cluster data
-init_genesis_data gode-rpc gode-rpc
+init_genesis_data bsc-rpc bsc-rpc
 
 for((i=1;i<=${NUMS_OF_VALIDATOR};i++)); do
-     init_genesis_data validator "gode-validator${i}"
+     init_genesis_data validator "bsc-validator${i}"
 done

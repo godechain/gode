@@ -2,7 +2,7 @@ version: "3"
 
 services:
   genesis:
-    image: gode-genesis
+    image: bsc-genesis
     env_file: .env
     environment:
       INIT_HOLDER_BALANCE: "500000000000000000000"
@@ -13,8 +13,8 @@ services:
       - ./config:/root/config
       - ./init-holders:/root/init-holders
     command: /root/scripts/bootstrap.sh
-
-  gode-rpc:
+  
+  bsc-rpc:
     image: bsc
     healthcheck:
       test: nc -z localhost 8545
@@ -23,35 +23,35 @@ services:
       retries: 15
     env_file: .env
     environment:
-      NODE_ID: gode-rpc
+      NODE_ID: bsc-rpc
     volumes:
-      - ./storage/gode-rpc:/root/.ethereum
+      - ./storage/bsc-rpc:/root/.ethereum
       - ./scripts:/scripts
       - ./config:/config
-    entrypoint: [ "sh", "-c", "/scripts/gode-rpc.sh" ]
+    entrypoint: [ "sh", "-c", "/scripts/bsc-rpc.sh" ]
 
-  gode-validator1:
+  bsc-validator1:
     image: bsc
     env_file: .env
     environment:
-      NODE_ID: gode-validator1
-      BOOTSTRAP_HOST: gode-rpc
+      NODE_ID: bsc-validator1
+      BOOTSTRAP_HOST: bsc-rpc
     volumes:
-      - ./storage/gode-validator1:/root/.ethereum
+      - ./storage/bsc-validator1:/root/.ethereum
       - ./scripts:/scripts
-    entrypoint: [ "sh", "-c", "/scripts/gode-validator.sh" ]
-
+    entrypoint: [ "sh", "-c", "/scripts/bsc-validator.sh" ]
+  
   truffle-test:
     image: truffle-test
     command: /scripts/truffle-test.sh
     env_file: .env
     environment:
-      RPC_HOST: gode-rpc
+      RPC_HOST: bsc-rpc
       RPC_PORT: 8545
     volumes:
       - ./scripts:/scripts
     depends_on:
-      gode-rpc:
+      bsc-rpc:
         condition: service_healthy
 
 networks:

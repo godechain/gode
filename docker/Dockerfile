@@ -10,7 +10,7 @@ RUN mv /bsc/build/bin/geth /usr/local/bin/geth
 EXPOSE 8545 8547 30303 30303/udp
 ENTRYPOINT [ "/usr/local/bin/geth" ]
 
-FROM ethereum/solc:0.6.4-alpine as gode-genesis
+FROM ethereum/solc:0.6.4-alpine as bsc-genesis
 
 RUN apk add --d --no-cache ca-certificates npm nodejs bash alpine-sdk
 

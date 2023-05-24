@@ -51,6 +51,7 @@ var (
 		big.NewInt(0),
 		big.NewInt(0),
 		big.NewInt(0),
+		big.NewInt(0),
 		nil,
 		nil,
 	}
@@ -79,6 +80,7 @@ var (
 		big.NewInt(0),
 		big.NewInt(0),
 		big.NewInt(0),
+		big.NewInt(0),
 		&CliqueConfig{Period: 0, Epoch: 30000},
 		nil,
 	}
@@ -98,6 +100,7 @@ var (
 		big.NewInt(0),
 		big.NewInt(0),
 		nil, nil, nil, nil,
+		big.NewInt(0),
 		big.NewInt(0),
 		big.NewInt(0),
 		big.NewInt(0),
@@ -189,6 +192,7 @@ type ChainConfig struct {
 	NielsBlock      *big.Int `json:"nielsBlock,omitempty" toml:",omitempty"`      // nielsBlock switch block (nil = no fork, 0 = already activated)
 	MirrorSyncBlock *big.Int `json:"mirrorSyncBlock,omitempty" toml:",omitempty"` // mirrorSyncBlock switch block (nil = no fork, 0 = already activated)
 	BrunoBlock      *big.Int `json:"brunoBlock,omitempty" toml:",omitempty"`      // brunoBlock switch block (nil = no fork, 0 = already activated)
+	NanoBlock       *big.Int `json:"nanoBlock,omitempty" toml:",omitempty"`
 
 	// Various consensus engines
 	Clique *CliqueConfig `json:"clique,omitempty" toml:",omitempty"`
@@ -287,6 +291,14 @@ func (c *ChainConfig) IsRamanujan(num *big.Int) bool {
 // IsOnRamanujan returns whether num is equal to the Ramanujan fork block
 func (c *ChainConfig) IsOnRamanujan(num *big.Int) bool {
 	return configNumEqual(c.RamanujanBlock, num)
+}
+
+func (c *ChainConfig) IsNano(num *big.Int) bool {
+	return isForked(c.NanoBlock, num)
+}
+
+func (c *ChainConfig) IsOnNano(num *big.Int) bool {
+	return configNumEqual(c.NanoBlock, num)
 }
 
 // IsNiels returns whether num is either equal to the Niels fork block or greater.
@@ -465,6 +477,7 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Confi
 	if isForkIncompatible(c.BrunoBlock, newcfg.BrunoBlock, head) {
 		return newCompatError("bruno fork block", c.BrunoBlock, newcfg.BrunoBlock)
 	}
+
 	return nil
 }
 
@@ -533,6 +546,7 @@ type Rules struct {
 	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsCatalyst                                    bool
+	IsNano                                                  bool
 	HasRuntimeUpgrade, HasDeployerProxy                     bool
 }
 
@@ -554,6 +568,7 @@ func (c *ChainConfig) Rules(num *big.Int) Rules {
 		IsIstanbul:        c.IsIstanbul(num),
 		IsBerlin:          c.IsBerlin(num),
 		IsCatalyst:        c.IsCatalyst(num),
+		IsNano:            c.IsNano(num),
 		HasRuntimeUpgrade: c.HasRuntimeUpgrade(num),
 		HasDeployerProxy:  c.HasDeployerProxy(num),
 	}
