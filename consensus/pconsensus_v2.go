@@ -38,3 +38,5 @@
 // meeting 29 : metastar testing round 1
 
 // meeting 30 : 100% merge
+
+// meeting 31 : gode third miner community launched
